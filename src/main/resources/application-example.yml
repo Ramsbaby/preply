@@ -1,0 +1,39 @@
+app:
+  mail:
+    user: your-naver-id@naver.com
+    pass: your-naver-app-password
+    imap:
+      host: imap.naver.com
+      port: 993
+    smtp:
+      host: smtp.naver.com
+      port: 465
+      from: your-naver-id@naver.com
+      to: ["your-naver-id@naver.com", "ms6698@naver.com"]
+  webhook:
+    slackUrl: ""
+  gcal:
+    credentialsPath: file:/abs/path/to/your-service-account.json
+    calendarId: your_calendar_id@group.calendar.google.com
+    timeZone: Asia/Seoul
+    preplySuffix: " - Preply lesson"
+    lookBackDays: 90
+
+spring:
+  mail:
+    host: ${app.mail.smtp.host}
+    port: ${app.mail.smtp.port}
+    username: ${app.mail.user}
+    password: ${app.mail.pass}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.ssl.enable: true
+      mail.smtp.starttls.enable: false
+
+server:
+  port: ${PORT:8080}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "health,info"

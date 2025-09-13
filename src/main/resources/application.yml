@@ -1,0 +1,40 @@
+app:
+  mail:
+    user: ${APP_MAIL_USER:}
+    pass: ${APP_MAIL_PASS:}
+    imap:
+      host: ${APP_MAIL_IMAP_HOST:imap.naver.com}
+      port: ${APP_MAIL_IMAP_PORT:993}
+    smtp:
+      host: ${APP_MAIL_SMTP_HOST:smtp.naver.com}
+      port: ${APP_MAIL_SMTP_PORT:465}
+      from: ${APP_MAIL_FROM:}
+      to: ${APP_MAIL_TO:}
+  webhook:
+    slackUrl: ${APP_WEBHOOK_SLACK_URL:}
+  gcal:
+    credentialsPath: ${APP_GCAL_CREDENTIALS_PATH:}
+    calendarId: ${APP_GCAL_CALENDAR_ID:}
+    timeZone: ${APP_GCAL_TZ:Asia/Seoul}
+    preplySuffix: ${APP_GCAL_PREPLY_SUFFIX:" - Preply lesson"}
+    lookBackDays: ${APP_GCAL_LOOKBACK_DAYS:90}
+  autorun: ${APP_AUTORUN:false}
+
+spring:
+  mail:
+    host: ${app.mail.smtp.host}
+    port: ${app.mail.smtp.port}
+    username: ${app.mail.user}
+    password: ${app.mail.pass}
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.ssl.enable: true
+      mail.smtp.starttls.enable: false
+
+server:
+  port: ${PORT:8080}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "health,info"

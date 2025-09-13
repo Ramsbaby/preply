@@ -1,0 +1,46 @@
+plugins {
+    id 'java'
+    id("org.springframework.boot") version "3.3.3"
+    id("io.spring.dependency-management") version "1.1.6"
+    id 'com.google.cloud.tools.jib' version '3.4.1'
+}
+
+group = 'com.ramsbaby'
+version = '1.0-SNAPSHOT'
+
+java { toolchain { languageVersion = JavaLanguageVersion.of(21) } }
+
+repositories {
+    mavenCentral()
+}
+
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter'       // 핵심 (context/beans 포함)
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+
+
+    implementation platform('com.google.cloud:libraries-bom:26.45.0')
+    implementation("org.springframework.boot:spring-boot-starter-mail")   // SMTP 발송
+    implementation("org.jsoup:jsoup:1.17.2")                              // HTML 파싱
+    implementation("org.springframework.boot:spring-boot-starter-webflux")// WebClient(웹훅)
+
+    implementation 'com.google.apis:google-api-services-calendar:v3-rev20250404-2.0.0'
+    implementation 'com.google.api-client:google-api-client:2.5.0'
+    implementation 'com.google.http-client:google-http-client-gson:1.43.3'
+
+    // Auth (Service Account 또는 ADC)
+    implementation 'com.google.auth:google-auth-library-oauth2-http:1.23.0'
+
+
+    compileOnly 'org.projectlombok:lombok:1.18.32'
+    annotationProcessor 'org.projectlombok:lombok:1.18.32'
+    annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testCompileOnly 'org.projectlombok:lombok:1.18.32'
+    testAnnotationProcessor 'org.projectlombok:lombok:1.18.32'
+}
+test {
+    useJUnitPlatform()
+}
