@@ -24,6 +24,7 @@ src/main/resources/calendar-json/
 
 # Logs
 *.log
+src/main/resources/application-local.yml
 
 .gradle
 build/

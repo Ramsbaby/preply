@@ -44,3 +44,222 @@ dependencies {
 test {
     useJUnitPlatform()
 }
+
+// --- 간편 배포 구성 (전역 헬퍼) ---
+def isWindows = org.gradle.internal.os.OperatingSystem.current().isWindows()
+def gcloudCmd = isWindows ? 'gcloud.cmd' : 'gcloud'
+
+def gcloudValue = { List<String> args ->
+    try {
+        def out = new ByteArrayOutputStream()
+        project.exec {
+            commandLine([gcloudCmd] + args)
+            standardOutput = out
+            ignoreExitValue = true
+        }
+        def v = out.toString().trim()
+        return v ? v : null
+    } catch(Exception ignored) {
+        return null
+    }
+}
+
+def resolveDeployConfig = {
+    def autoProjectId = gcloudValue(['config','get-value','project'])
+    def cfg = [
+        projectId : (findProperty('projectId') ?: System.getenv('GCP_PROJECT') ?: autoProjectId ?: 'vast-box-471813-d6').toString(),
+        region    : (findProperty('region')    ?: 'asia-northeast3').toString(),
+        repo      : (findProperty('repo')      ?: 'app-repo').toString(),
+        service   : (findProperty('service')   ?: 'email-dispatcher').toString(),
+        tag       : (findProperty('tag')       ?: new Date().format('yyyyMMdd-HHmmss')).toString(),
+        fromImage : (findProperty('fromImage') ?: 'eclipse-temurin:21-jre').toString(),
+        port      : (findProperty('port')      ?: '8080').toString()
+    ]
+    cfg.image = "${cfg.region}-docker.pkg.dev/${cfg.projectId}/${cfg.repo}/${cfg.service}:${cfg.tag}"
+    return cfg
+}
+
+// 한 번의 빌드/배포 동안 고정된 설정(태그 포함)
+def DEPLOY_CFG = resolveDeployConfig()
+
+// application-local.yml을 읽어서 Cloud Run 환경변수 맵으로 변환
+def loadLocalYamlEnv = {
+    def f = file('src/main/resources/application-local.yml')
+    if (!f.exists()) return [:]
+    def lines = f.readLines('UTF-8')
+    def pathByLevel = [:]
+    def map = [:]
+    lines.each { raw ->
+        def line = raw.replaceAll(/#.*$/, '')
+        if (!line.trim()) return
+        def m = (line =~ /^(\s*)([A-Za-z0-9_\-]+):\s*(.*)$/)
+        if (!m.matches()) return
+        int indent = m.group(1).length()
+        String key = m.group(2)
+        String rest = m.group(3)
+        int level = (int)(indent / 2)
+        // 상위 경로 재구성
+        if (level == 0) {
+            pathByLevel.clear()
+        } else {
+            pathByLevel.keySet().findAll { it >= level }.each { pathByLevel.remove(it) }
+        }
+        pathByLevel[level] = key
+        if (rest != null && rest.trim()) {
+            def path = (0..level).collect { i -> pathByLevel[i] }.findAll { it != null }.join('.')
+            map[path] = rest.trim()
+        }
+    }
+    def val = { p ->
+        def v = map[p]
+        if (v == null) return null
+        v = v.replaceAll(/^"|"$/, '')
+        v = v.replaceAll(/^'|'$/, '')
+        return v
+    }
+    def parseList = { s ->
+        if (s == null) return null
+        def out = []
+        def mm = (s =~ /"(.*?)"/)
+        while (mm.find()) { out << mm.group(1) }
+        if (out.isEmpty()) {
+            out = s.replaceAll(/[\[\]]/, '').split(/\s*,\s*/).toList().findAll { it }
+        }
+        return out
+    }
+    def env = [:]
+    env['APP_MAIL_USER'] = val('app.mail.user')
+    env['APP_MAIL_PASS'] = val('app.mail.pass')
+    env['APP_MAIL_IMAP_HOST'] = val('app.mail.imap.host')
+    env['APP_MAIL_IMAP_PORT'] = val('app.mail.imap.port')
+    env['APP_MAIL_SMTP_HOST'] = val('app.mail.smtp.host')
+    env['APP_MAIL_SMTP_PORT'] = val('app.mail.smtp.port')
+    env['APP_MAIL_FROM'] = val('app.mail.smtp.from')
+    def toRaw = val('app.mail.smtp.to')
+    if (toRaw != null) {
+        def list = parseList(toRaw)
+        if (!list.isEmpty()) env['APP_MAIL_TO'] = list.join(',')
+    }
+    env['APP_GCAL_CREDENTIALS_PATH'] = val('app.gcal.credentialsPath')
+    env['APP_GCAL_CALENDAR_ID'] = val('app.gcal.calendarId')
+    env['APP_GCAL_TZ'] = val('app.gcal.timeZone')
+    env['APP_GCAL_PREPLY_SUFFIX'] = val('app.gcal.preplySuffix')
+    env['APP_GCAL_LOOKBACK_DAYS'] = val('app.gcal.lookBackDays')
+    env['APP_AUTORUN'] = val('app.autorun')
+    env.findAll { k, v -> v != null && v.toString().trim() }
+}
+
+jib {
+    from { image = DEPLOY_CFG.fromImage }
+    to { image = DEPLOY_CFG.image }
+    container { ports = [DEPLOY_CFG.port] }
+}
+
+tasks.register('deploy') {
+    group = 'deployment'
+    description = 'Builds image with Jib and deploys to Cloud Run.'
+    dependsOn 'gcloudPreflight', 'jib'
+    doLast {
+        def cfg = DEPLOY_CFG
+        println "IMAGE  : ${cfg.image}"
+        // Cloud Run에 전달할 환경변수 구성 (application-local.yml 우선, 없으면 OS/Gradle 프로퍼티)
+        def yamlEnv = loadLocalYamlEnv()
+        def envFrom = { String name ->
+            def p = project.findProperty(name)
+            if (p != null && p.toString().trim()) return p.toString()
+            def e = System.getenv(name)
+            if (e != null && e.toString().trim()) return e.toString()
+            return null
+        }
+        def envPairs = []
+        def escapeVal = { String s ->
+            if (s == null) return null
+            // gcloud dict 값 파서 충돌 방지: \\ , \, , \=
+            s.replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=")
+        }
+        def keys = [
+            'APP_MAIL_USER','APP_MAIL_PASS',
+            'APP_MAIL_IMAP_HOST','APP_MAIL_IMAP_PORT',
+            'APP_MAIL_SMTP_HOST','APP_MAIL_SMTP_PORT',
+            'APP_MAIL_FROM','APP_MAIL_TO',
+            'APP_GCAL_CREDENTIALS_PATH','APP_GCAL_CALENDAR_ID','APP_GCAL_TZ','APP_GCAL_PREPLY_SUFFIX','APP_GCAL_LOOKBACK_DAYS',
+            'APP_AUTORUN'
+        ]
+        def envMap = [:]
+        keys.each { k ->
+            def v = yamlEnv[k]
+            if (!v) v = envFrom(k)
+            if (v) {
+                def sv = v.toString()
+                envPairs << "${k}=${escapeVal(sv)}"
+                envMap[k] = sv
+            }
+        }
+        // 배포 대상 프로젝트를 명시적으로 설정 (idempotent)
+        exec {
+            environment 'CLOUDSDK_CORE_DISABLE_PROMPTS', '1'
+            commandLine gcloudCmd, 'config', 'set', 'project', cfg.projectId
+        }
+        exec {
+            environment 'CLOUDSDK_CORE_DISABLE_PROMPTS', '1'
+            def args = [gcloudCmd, 'run', 'deploy', cfg.service,
+                '--image', cfg.image,
+                '--region', cfg.region,
+                '--no-allow-unauthenticated',
+                '--cpu', '0.5', '--memory', '512Mi',
+                '--max-instances', '1', '--min-instances', '0',
+                '--timeout', '900s',
+                '--quiet']
+            if (!envPairs.isEmpty()) {
+                // flags 파일 대신 Cloud Run의 --env-vars-file 사용 (YAML)
+                def envFile = new File(buildDir, 'cloudrun-env.yaml')
+                def sb = new StringBuilder()
+                envMap.each { kk, vv ->
+                    // YAML single-quote로 감싸고 내부 '는 '' 로 이스케이프
+                    def yv = vv.replace("'", "''")
+                    sb.append(kk).append(': ').append("'").append(yv).append("'\n")
+                }
+                envFile.parentFile.mkdirs()
+                envFile.text = sb.toString()
+                args += ['--env-vars-file', envFile.absolutePath]
+            }
+            commandLine args
+        }
+
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            environment 'CLOUDSDK_CORE_DISABLE_PROMPTS', '1'
+            commandLine gcloudCmd, 'run', 'services', 'describe', cfg.service, '--region', cfg.region, '--format=value(status.url)', '--quiet'
+            standardOutput = stdout
+        }
+        println "URL    : ${stdout.toString().trim()}"
+    }
+}
+
+tasks.register('configureDockerAuth') {
+    group = 'deployment'
+    description = 'Configures Docker credential helper for Artifact Registry.'
+    doLast {
+        def cfg = DEPLOY_CFG
+        exec {
+            commandLine gcloudCmd, 'auth', 'configure-docker', "${cfg.region}-docker.pkg.dev", '--quiet'
+        }
+    }
+}
+
+tasks.register('gcloudPreflight') {
+    group = 'deployment'
+    description = 'Ensures gcloud project is set and required services are enabled.'
+    dependsOn 'configureDockerAuth'
+    doLast {
+        def cfg = DEPLOY_CFG
+        exec {
+            environment 'CLOUDSDK_CORE_DISABLE_PROMPTS', '1'
+            commandLine gcloudCmd, 'config', 'set', 'project', cfg.projectId
+        }
+        exec {
+            environment 'CLOUDSDK_CORE_DISABLE_PROMPTS', '1'
+            commandLine gcloudCmd, 'services', 'enable', 'run.googleapis.com', 'artifactregistry.googleapis.com'
+        }
+    }
+}

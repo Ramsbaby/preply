@@ -1,47 +1,56 @@
 package com.ramsbaby.preply.component;
 
-import com.ramsbaby.preply.config.AppProps;
-import com.ramsbaby.preply.dto.Money;
-import com.ramsbaby.preply.dto.RateEntry;
-import jakarta.mail.*;
-import jakarta.mail.search.*;
-import lombok.RequiredArgsConstructor;
-import org.springframework.stereotype.Service;
-
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
-import java.util.*;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.springframework.stereotype.Service;
+
+import com.ramsbaby.preply.config.AppProps;
+import com.ramsbaby.preply.dto.Money;
+import com.ramsbaby.preply.dto.RateEntry;
+
+import jakarta.mail.FetchProfile;
+import jakarta.mail.Folder;
+import jakarta.mail.Message;
+import jakarta.mail.MessagingException;
+import jakarta.mail.Multipart;
+import jakarta.mail.Part;
+import jakarta.mail.Session;
+import jakarta.mail.Store;
+import jakarta.mail.search.AndTerm;
+import jakarta.mail.search.ComparisonTerm;
+import jakarta.mail.search.OrTerm;
+import jakarta.mail.search.ReceivedDateTerm;
+import jakarta.mail.search.SearchTerm;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class PreplyRateCacheLoader {
 
     private static final ZoneId KST = ZoneId.of("Asia/Seoul");
-    // 정규식 (KO/EN 라벨 대응)
-    private static final Pattern STUDENT_KO = Pattern.compile("\\b학생\\s*[:：]\\s*(.+?)\\s*(?=레슨\\s*시간|비용|Price|Lesson|$)");
-    private static final Pattern STUDENT_EN = Pattern.compile("\\bStudent\\s*[:：]\\s*(.+?)\\s*(?=Lesson\\s*time|Price|비용|레슨|$)", Pattern.CASE_INSENSITIVE);
-    private static final Pattern PRICE_BOTH = Pattern.compile("(?:비용|Price)\\s*[:：]\\s*([0-9][0-9,]*\\.?[0-9]{0,2})\\s*(\\$|USD|₩|KRW)", Pattern.CASE_INSENSITIVE);
     private final AppProps props;
-
-    private static String first(String s, Pattern... ps) {
-        for (Pattern p : ps) {
-            var m = p.matcher(s);
-            if (m.find()) return m.group(1);
-        }
-        return null;
-    }
 
     // 이름 정규화(캘린더 매칭용): 괄호 alias 제거, 접미사/여백 정리, 케이스-인센시티브 키
     public static String normalize(String raw) {
-        if (raw == null) return "";
+        if (raw == null)
+            return "";
         // 괄호 alias / 접미사 제거
         String s = raw.replaceAll("\\s*\\(.*?\\)\\s*", " ")
                 .replaceAll("\\s+-\\s*Preply lesson\\s*$", "")
-                .replace(".", " ")                // 성 이니셜의 점 제거: "S." -> "S"
+                .replace(".", " ") // 성 이니셜의 점 제거: "S." -> "S"
                 .trim();
         s = s.replaceAll("\\s+", " ").toLowerCase(java.util.Locale.ROOT);
 
@@ -54,9 +63,11 @@ public class PreplyRateCacheLoader {
     }
 
     private static String cleanText(String s) {
-        if (s == null) return "";
+        if (s == null)
+            return "";
         return s
-                .replace('\u00A0', ' ')                 // NBSP → space
+                .replace('\u00A0', ' ') // NBSP → space
+                .replace('\u202F', ' ') // NNBSP → space
                 .replaceAll("[\\u200B\\u200C\\u200D\\uFEFF\\u2060\\u00AD]", "") // ZWSP/ZWJ/BOM/SHY 제거
                 .replaceAll("[\\s\\u0000-\\u001F]+", " ") // 제어문자/여러 공백 → 한 칸
                 .trim();
@@ -65,15 +76,10 @@ public class PreplyRateCacheLoader {
     private static String firstMatch(String s, Pattern... ps) {
         for (Pattern p : ps) {
             Matcher m = p.matcher(s);
-            if (m.find()) return m.group(1);
+            if (m.find())
+                return m.group(1);
         }
         return null;
-    }
-
-    // (선택) 로그 찍을 때만 사용
-    @SuppressWarnings("unused")
-    private static String left(String s, int n) {
-        return s.length() <= n ? s : s.substring(0, n);
     }
 
     public Map<String, Money> loadRates() {
@@ -96,17 +102,16 @@ public class PreplyRateCacheLoader {
             Date start = Date.from(today.minusDays(props.gcal().lookBackDays()).atStartOfDay(KST).toInstant());
             Date end = Date.from(today.plusDays(1).atStartOfDay(KST).toInstant());
 
-            // 제목 OR (가격 있는 예약 메일만)
+            // 제목(국/영) + 수신일 범위(사용자 요청 120일 기준 props로 제어)
             SearchTerm subjOr = new OrTerm(
-                    new SubjectTerm("예약했어요"),
-                    new SubjectTerm("scheduled a new lesson")
-            );
-            SearchTerm term = new AndTerm(
-                    new FromStringTerm("preply.com"),
-                    new AndTerm(subjOr, new AndTerm(
-                            new ReceivedDateTerm(ComparisonTerm.GE, start),
-                            new ReceivedDateTerm(ComparisonTerm.LT, end)))
-            );
+                    new jakarta.mail.search.SubjectTerm("예약했어요"),
+                    new jakarta.mail.search.SubjectTerm("scheduled a new lesson"));
+
+            SearchTerm dateTerm = new AndTerm(
+                    new ReceivedDateTerm(ComparisonTerm.GE, start),
+                    new ReceivedDateTerm(ComparisonTerm.LT, end));
+
+            SearchTerm term = new AndTerm(subjOr, dateTerm);
 
             Message[] found = inbox.search(term);
 
@@ -121,15 +126,32 @@ public class PreplyRateCacheLoader {
                     String key = normalize(re.studentName());
                     // 최신 메일 우선(수신일이 더 최근이면 갱신)
                     Money prev = rateByStudent.get(key);
-                    if (prev == null) rateByStudent.put(key, re.money());
-                    else rateByStudent.put(key, re.money()); // 필요 시 통화 우선 규칙 추가
+                    if (prev == null)
+                        rateByStudent.put(key, re.money());
+                    else
+                        rateByStudent.put(key, re.money()); // 필요 시 통화 우선 규칙 추가
                 });
             }
             inbox.close(false);
         } catch (MessagingException e) {
             throw new IllegalStateException("IMAP 읽기 실패", e);
         }
+
         return rateByStudent;
+    }
+
+    private static boolean isInRange(Message m, Date start, Date end) {
+        try {
+            Date r = m.getReceivedDate();
+            Date s = m.getSentDate();
+            if (r != null && !r.before(start) && r.before(end))
+                return true;
+            if (s != null && !s.before(start) && s.before(end))
+                return true;
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private Optional<RateEntry> extractRate(Message msg) {
@@ -142,42 +164,61 @@ public class PreplyRateCacheLoader {
                     throw new RuntimeException(e);
                 }
             });
-            if (html.isBlank()) return Optional.empty();
+            if (html.isBlank())
+                return Optional.empty();
 
             String text = org.jsoup.Jsoup.parse(html).text();
-            String cleaned = cleanText(text); // ★ 제어문자/공백 정리
+            String cleaned = cleanText(text);
 
             // 2) 학생 이름 (KO/EN 라벨 모두 지원, 다음 라벨 직전까지만 비탐욕 캡처)
             Pattern STU_KO = Pattern.compile(
                     "학생\\s*[:：]\\s*(.+?)\\s*(?=(레슨\\s*시간|Lesson\\s*time|비용|Price)\\s*[:：]|$)",
-                    Pattern.CASE_INSENSITIVE
-            );
+                    Pattern.CASE_INSENSITIVE);
             Pattern STU_EN = Pattern.compile(
                     "Student\\s*[:：]\\s*(.+?)\\s*(?=(Lesson\\s*time|레슨\\s*시간|Price|비용)\\s*[:：]|$)",
-                    Pattern.CASE_INSENSITIVE
-            );
+                    Pattern.CASE_INSENSITIVE);
             String student = firstMatch(cleaned, STU_KO, STU_EN);
             if (student == null || student.isBlank()) {
-                // 디버깅 도움
-                // log.debug("학생 라벨 매칭 실패. sample={}", left(cleaned, 200));
                 return Optional.empty();
             }
             student = student.trim();
 
-            // 3) 금액/통화 (KO/EN 라벨, $, USD, ₩, KRW 모두 지원)
+            // 3) 금액/통화 (다양한 표기 대응: 라벨/콜론 선택, 기호 앞뒤, 통화 코드/기호)
             Pattern P_PRICE = Pattern.compile(
-                    "(?:비용|Price)\\s*[:：]\\s*([0-9][0-9,]*\\.?[0-9]{0,2})\\s*(\\$|USD|₩|KRW)",
-                    Pattern.CASE_INSENSITIVE
-            );
+                    "(?:비용|Price)\\s*[:：]?\\s*(\\$|USD|₩|KRW)?\\s*([0-9][0-9,]*\\.?[0-9]{0,2})\\s*(USD|KRW|\\$|₩)?",
+                    Pattern.CASE_INSENSITIVE);
+            String num = null;
+            String curRaw = null;
             Matcher mp = P_PRICE.matcher(cleaned);
-            if (!mp.find()) {
-                // log.debug("비용 라벨 매칭 실패. sample={}", left(cleaned, 200));
+            if (mp.find()) {
+                num = mp.group(2);
+                curRaw = mp.group(1) != null && !mp.group(1).isBlank() ? mp.group(1) : mp.group(3);
+            }
+
+            if (num == null) {
+                Matcher m1 = Pattern.compile("\\$\\s*([0-9][0-9,]*\\.?[0-9]{0,2})").matcher(cleaned);
+                if (m1.find()) {
+                    num = m1.group(1);
+                    curRaw = "$";
+                }
+            }
+
+            if (num == null) {
+                Matcher m2 = Pattern
+                        .compile("([0-9][0-9,]*\\.?[0-9]{0,2})\\s*(USD|KRW)", Pattern.CASE_INSENSITIVE)
+                        .matcher(cleaned);
+                if (m2.find()) {
+                    num = m2.group(1);
+                    curRaw = m2.group(2);
+                }
+            }
+
+            if (num == null) {
                 return Optional.empty();
             }
-            String num = mp.group(1).replace(",", "");
-            BigDecimal amount = new BigDecimal(num).multiply(new BigDecimal("0.82"));
 
-            String curRaw = mp.group(2);
+            BigDecimal amount = new BigDecimal(num.replace(",", "")).multiply(new BigDecimal("0.82"));
+
             String currency = switch (curRaw) {
                 case "$", "USD", "usd" -> "USD";
                 case "₩", "KRW", "krw" -> "KRW";
@@ -199,28 +240,34 @@ public class PreplyRateCacheLoader {
     }
 
     private Optional<String> extractHtml(Part p) throws Exception {
-        if (p.isMimeType("text/html")) return Optional.of((String) p.getContent());
+        if (p.isMimeType("text/html"))
+            return Optional.of((String) p.getContent());
         if (p.isMimeType("multipart/*")) {
             Multipart mp = (Multipart) p.getContent();
             for (int i = 0; i < mp.getCount(); i++) {
                 var r = extractHtml(mp.getBodyPart(i));
-                if (r.isPresent()) return r;
+                if (r.isPresent())
+                    return r;
             }
         }
-        if (p.isMimeType("message/rfc822")) return extractHtml((Part) p.getContent());
+        if (p.isMimeType("message/rfc822"))
+            return extractHtml((Part) p.getContent());
         return Optional.empty();
     }
 
     private Optional<String> extractText(Part p) throws Exception {
-        if (p.isMimeType("text/plain")) return Optional.of((String) p.getContent());
+        if (p.isMimeType("text/plain"))
+            return Optional.of((String) p.getContent());
         if (p.isMimeType("multipart/*")) {
             Multipart mp = (Multipart) p.getContent();
             for (int i = 0; i < mp.getCount(); i++) {
                 var r = extractText(mp.getBodyPart(i));
-                if (r.isPresent()) return r;
+                if (r.isPresent())
+                    return r;
             }
         }
-        if (p.isMimeType("message/rfc822")) return extractText((Part) p.getContent());
+        if (p.isMimeType("message/rfc822"))
+            return extractText((Part) p.getContent());
         return Optional.empty();
     }
 }

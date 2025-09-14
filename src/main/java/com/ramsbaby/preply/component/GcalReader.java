@@ -1,5 +1,16 @@
 package com.ramsbaby.preply.component;
 
+import java.io.IOException;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.ArrayList;
+import java.util.List;
+
+import org.springframework.core.io.ResourceLoader;
+import org.springframework.stereotype.Service;
+
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
 import com.google.api.client.googleapis.json.GoogleJsonResponseException;
 import com.google.api.client.json.gson.GsonFactory;
@@ -9,17 +20,8 @@ import com.google.auth.http.HttpCredentialsAdapter;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.ramsbaby.preply.config.AppProps;
 import com.ramsbaby.preply.dto.LessonEvent;
-import lombok.RequiredArgsConstructor;
-import org.springframework.core.io.ResourceLoader;
-import org.springframework.stereotype.Service;
 
-import java.io.IOException;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
-import java.util.ArrayList;
-import java.util.List;
+import lombok.RequiredArgsConstructor;
 
 @Service
 @RequiredArgsConstructor
@@ -65,7 +67,8 @@ public class GcalReader {
             String suffix = props.gcal().preplySuffix();
             resp.getItems().forEach(item -> {
                 String summary = item.getSummary();
-                if (summary == null || !summary.endsWith(suffix)) return;
+                if (summary == null || !summary.endsWith(suffix))
+                    return;
 
                 String base = summary.substring(0, summary.length() - suffix.length()).trim();
                 String name = base.replaceAll("\\s*\\(.*?\\)\\s*", " ").replaceAll("\\s+", " ").trim();
@@ -82,7 +85,8 @@ public class GcalReader {
             var code = gjre.getStatusCode();
             var details = gjre.getDetails();
             var reason = (details != null && details.getErrors() != null && !details.getErrors().isEmpty())
-                    ? details.getErrors().get(0).getReason() : "unknown";
+                    ? details.getErrors().get(0).getReason()
+                    : "unknown";
             throw new IllegalStateException("Google Calendar 읽기 실패: HTTP " + code + " / reason=" + reason
                     + " / message=" + gjre.getMessage()
                     + "\n- 캘린더 공유 여부(서비스 계정 이메일)와 calendarId를 확인하세요.", gjre);
