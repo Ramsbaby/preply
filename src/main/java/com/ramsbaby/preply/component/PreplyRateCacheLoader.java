@@ -4,8 +4,10 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -138,6 +140,139 @@ public class PreplyRateCacheLoader {
         }
 
         return rateByStudent;
+    }
+
+    /**
+     * 오늘(KST) 레슨이 12시간 이내 취소되어 보상 지급되는 메일을 파싱하여 금액을 반환한다.
+     * 조건:
+     * - 제목에 "수업을 취소했습니다" 포함 (예: "Roth 학생이 수업을 취소했습니다")
+     * - 본문에 "예정된 시작 시간 12시간 전에 취소" 및 "지불해 드립니다" 포함
+     * - 본문에 "레슨: {M}월 {D}일" 포함하고, 그 날짜가 오늘과 동일
+     * - 금액/통화(예: 22.00 $, 22 USD 등) 추출
+     */
+    public List<RateEntry> loadTodayCancellationCompensations() {
+        List<RateEntry> results = new ArrayList<>();
+
+        Properties p = new Properties();
+        p.put("mail.store.protocol", "imaps");
+        p.put("mail.imaps.host", props.mail().imap().host());
+        p.put("mail.imaps.port", String.valueOf(props.mail().imap().port()));
+        p.put("mail.imaps.ssl.enable", "true");
+        p.put("mail.mime.allowutf8", "true");
+
+        Session session = Session.getInstance(p);
+        try (Store store = session.getStore("imaps")) {
+            store.connect(props.mail().user(), props.mail().pass());
+            Folder inbox = store.getFolder("INBOX");
+            inbox.open(Folder.READ_ONLY);
+
+            LocalDate today = LocalDate.now(KST);
+            Date start = Date.from(today.minusDays(props.gcal().lookBackDays()).atStartOfDay(KST).toInstant());
+            Date end = Date.from(today.plusDays(1).atStartOfDay(KST).toInstant());
+
+            SearchTerm subjCancel = new jakarta.mail.search.SubjectTerm("수업을 취소했습니다");
+            SearchTerm dateTerm = new AndTerm(
+                    new ReceivedDateTerm(ComparisonTerm.GE, start),
+                    new ReceivedDateTerm(ComparisonTerm.LT, end));
+            SearchTerm term = new AndTerm(subjCancel, dateTerm);
+
+            Message[] found = inbox.search(term);
+            FetchProfile fp = new FetchProfile();
+            fp.add(FetchProfile.Item.ENVELOPE);
+            fp.add(FetchProfile.Item.CONTENT_INFO);
+            inbox.fetch(found, fp);
+
+            for (Message m : found) {
+                try {
+                    String html = extractHtml(m).orElseGet(() -> {
+                        try {
+                            return extractText(m).orElse("");
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    });
+                    if (html.isBlank())
+                        continue;
+                    String text = org.jsoup.Jsoup.parse(html).text();
+                    String cleaned = cleanText(text);
+
+                    boolean isComp = cleaned.contains("예정된 시작 시간 12시간 전에 취소")
+                            && cleaned.contains("지불해 드립니다");
+                    if (!isComp)
+                        continue;
+
+                    // 레슨 날짜 추출 (예: "레슨: 9월 14일 ...")
+                    Matcher md = Pattern.compile("레슨\\s*[:：]\\s*(\\d{1,2})월\\s*(\\d{1,2})일").matcher(cleaned);
+                    LocalDate lessonDate = null;
+                    if (md.find()) {
+                        int mm = Integer.parseInt(md.group(1));
+                        int dd = Integer.parseInt(md.group(2));
+                        lessonDate = LocalDate.of(today.getYear(), mm, dd);
+                    }
+                    if (lessonDate == null || !lessonDate.equals(today))
+                        continue;
+
+                    // 학생 이름: 본문 라벨 또는 제목에서 추출
+                    String student = firstMatch(cleaned,
+                            Pattern.compile(
+                                    "학생\\s*[:：]\\s*(.+?)\\s*(?=(레슨|Lesson|비용|Price)\\s*[:：]|$)",
+                                    Pattern.CASE_INSENSITIVE));
+                    if (student == null || student.isBlank()) {
+                        try {
+                            String subj = Optional.ofNullable(m.getSubject()).orElse("");
+                            Matcher ms = Pattern.compile("(.+?)\\s*학생이\\s*수업을\\s*취소했습니다").matcher(subj);
+                            if (ms.find())
+                                student = ms.group(1);
+                        } catch (Exception ignore) {
+                        }
+                    }
+                    if (student == null || student.isBlank())
+                        continue;
+                    student = student.trim();
+
+                    // 금액/통화 추출 (보상 금액은 문장 중 자유롭게 배치됨)
+                    String num = null;
+                    String curRaw = null;
+                    Matcher mUsd = Pattern.compile("\\$\\s*([0-9][0-9,]*\\.?[0-9]{0,2})").matcher(cleaned);
+                    if (mUsd.find()) {
+                        num = mUsd.group(1);
+                        curRaw = "$";
+                    }
+                    if (num == null) {
+                        Matcher mCur = Pattern.compile(
+                                "([0-9][0-9,]*\\.?[0-9]{0,2})\\s*(USD|KRW|\\$|₩)",
+                                Pattern.CASE_INSENSITIVE).matcher(cleaned);
+                        if (mCur.find()) {
+                            num = mCur.group(1);
+                            curRaw = mCur.group(2);
+                        }
+                    }
+                    if (num == null)
+                        continue;
+
+                    BigDecimal amount = new BigDecimal(num.replace(",", "")); // 보상 문구는 순지급액으로 간주
+                    String currency = switch (curRaw) {
+                        case "$", "USD", "usd" -> "USD";
+                        case "₩", "KRW", "krw" -> "KRW";
+                        default -> curRaw.toUpperCase(Locale.ROOT);
+                    };
+
+                    ZonedDateTime receivedAt = Optional.ofNullable(m.getReceivedDate())
+                            .map(d -> d.toInstant().atZone(KST))
+                            .orElse(ZonedDateTime.now(KST));
+
+                    results.add(new RateEntry(normalize(student), new Money(amount, currency), receivedAt));
+                } catch (Exception e) {
+                    log.warn("취소 보상 파싱 오류: {}", e.toString());
+                }
+            }
+
+            inbox.close(false);
+        } catch (MessagingException e) {
+            throw new IllegalStateException("IMAP 읽기 실패(취소 보상)", e);
+        }
+
+        return results;
     }
 
     private static boolean isInRange(Message m, Date start, Date end) {

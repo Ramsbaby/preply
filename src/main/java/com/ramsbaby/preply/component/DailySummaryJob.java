@@ -59,7 +59,7 @@ public class DailySummaryJob {
         // 2) 캘린더 오늘 수업
         List<LessonEvent> events = gcal.loadTodayPreplyEvents(); // name already normalized
 
-        // 3) 매칭 & 합계
+        // 3) 매칭 & 합계 (+ 취소 보상 추가)
         record Row(String student, Money money) {
         }
         List<Row> rows = new ArrayList<>();
@@ -72,6 +72,20 @@ public class DailySummaryJob {
             } else {
                 rows.add(new Row(e.studentName(), rate));
             }
+        }
+
+        // 3-1) 오늘 취소 보상 메일을 추가 (캘린더에 없더라도 추가)
+        try {
+            var compList = rateLoader.loadTodayCancellationCompensations();
+            java.util.Set<String> existing = rows.stream().map(r -> r.student())
+                    .collect(java.util.stream.Collectors.toSet());
+            for (var re : compList) {
+                if (!existing.contains(re.studentName())) {
+                    rows.add(new Row(re.studentName(), re.money()));
+                    existing.add(re.studentName());
+                }
+            }
+        } catch (Exception ignore) {
         }
 
         Map<String, BigDecimal> totals = rows.stream()
