@@ -104,7 +104,7 @@ public class DailySummaryJob {
 
         // 4) 메일 본문
         StringBuilder sb = new StringBuilder();
-        sb.append("[Preply 오늘 수입 요약]\n\n");
+        sb.append("[Preply 오늘 수입 요약]\n");
 
         // 통화별 합계
         if (totals.isEmpty())
