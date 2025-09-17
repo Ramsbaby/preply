@@ -29,10 +29,10 @@ import jakarta.mail.Multipart;
 import jakarta.mail.Part;
 import jakarta.mail.Session;
 import jakarta.mail.Store;
-import jakarta.mail.search.AndTerm;
-import jakarta.mail.search.ComparisonTerm;
+// import jakarta.mail.search.AndTerm;
+// import jakarta.mail.search.ComparisonTerm;
 import jakarta.mail.search.OrTerm;
-import jakarta.mail.search.ReceivedDateTerm;
+// import jakarta.mail.search.ReceivedDateTerm;
 import jakarta.mail.search.SearchTerm;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -115,16 +115,10 @@ public class PreplyRateCacheLoader {
             Date start = Date.from(today.minusDays(props.gcal().lookBackDays()).atStartOfDay(KST).toInstant());
             Date end = Date.from(today.plusDays(1).atStartOfDay(KST).toInstant());
 
-            // 제목(국/영) + 수신일 범위(사용자 요청 120일 기준 props로 제어)
-            SearchTerm subjOr = new OrTerm(
+            // 제목(국/영) 기준으로만 검색 후, 날짜 범위는 KST로 로컬 필터링
+            SearchTerm term = new OrTerm(
                     new jakarta.mail.search.SubjectTerm("예약했어요"),
                     new jakarta.mail.search.SubjectTerm("scheduled a new lesson"));
-
-            SearchTerm dateTerm = new AndTerm(
-                    new ReceivedDateTerm(ComparisonTerm.GE, start),
-                    new ReceivedDateTerm(ComparisonTerm.LT, end));
-
-            SearchTerm term = new AndTerm(subjOr, dateTerm);
 
             Message[] found = inbox.search(term);
 
@@ -135,6 +129,8 @@ public class PreplyRateCacheLoader {
             inbox.fetch(found, fp);
 
             for (Message m : found) {
+                if (!isInRange(m, start, end))
+                    continue;
                 extractRate(m).ifPresent(re -> {
                     String key = normalize(re.studentName());
                     // 최신 메일 우선(수신일이 더 최근이면 갱신)
@@ -181,11 +177,8 @@ public class PreplyRateCacheLoader {
             Date start = Date.from(today.minusDays(props.gcal().lookBackDays()).atStartOfDay(KST).toInstant());
             Date end = Date.from(today.plusDays(1).atStartOfDay(KST).toInstant());
 
-            SearchTerm subjCancel = new jakarta.mail.search.SubjectTerm("수업을 취소했습니다");
-            SearchTerm dateTerm = new AndTerm(
-                    new ReceivedDateTerm(ComparisonTerm.GE, start),
-                    new ReceivedDateTerm(ComparisonTerm.LT, end));
-            SearchTerm term = new AndTerm(subjCancel, dateTerm);
+            // 제목 기준으로만 검색 후, 날짜는 KST 로컬 필터링
+            SearchTerm term = new jakarta.mail.search.SubjectTerm("수업을 취소했습니다");
 
             Message[] found = inbox.search(term);
             FetchProfile fp = new FetchProfile();
@@ -194,6 +187,8 @@ public class PreplyRateCacheLoader {
             inbox.fetch(found, fp);
 
             for (Message m : found) {
+                if (!isInRange(m, start, end))
+                    continue;
                 try {
                     String html = extractHtml(m).orElseGet(() -> {
                         try {
