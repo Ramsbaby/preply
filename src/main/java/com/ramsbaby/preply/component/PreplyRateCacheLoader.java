@@ -84,6 +84,17 @@ public class PreplyRateCacheLoader {
         return null;
     }
 
+    private static String normalizeCurrency(String rawCurrency) {
+        if (rawCurrency == null || rawCurrency.isBlank()) {
+            return "USD";
+        }
+        return switch (rawCurrency) {
+            case "$", "USD", "usd" -> "USD";
+            case "₩", "KRW", "krw" -> "KRW";
+            default -> rawCurrency.toUpperCase(Locale.ROOT);
+        };
+    }
+
     public Map<String, Money> loadRates() {
         Map<String, Money> rateByStudent = new HashMap<>();
         Properties p = new Properties();
@@ -250,12 +261,8 @@ public class PreplyRateCacheLoader {
                     if (num == null)
                         continue;
 
-                    BigDecimal amount = new BigDecimal(num.replace(",", "")); // 보상 문구는 순지급액으로 간주
-                    String currency = switch (curRaw) {
-                        case "$", "USD", "usd" -> "USD";
-                        case "₩", "KRW", "krw" -> "KRW";
-                        default -> curRaw.toUpperCase(Locale.ROOT);
-                    };
+                    BigDecimal amount = new BigDecimal(num.replace(",", "")).multiply(new BigDecimal("0.82"));
+                    String currency = normalizeCurrency(curRaw);
 
                     ZonedDateTime receivedAt = Optional.ofNullable(m.getReceivedDate())
                             .map(d -> d.toInstant().atZone(KST))
@@ -354,11 +361,7 @@ public class PreplyRateCacheLoader {
 
             BigDecimal amount = new BigDecimal(num.replace(",", "")).multiply(new BigDecimal("0.82"));
 
-            String currency = switch (curRaw) {
-                case "$", "USD", "usd" -> "USD";
-                case "₩", "KRW", "krw" -> "KRW";
-                default -> curRaw.toUpperCase(Locale.ROOT);
-            };
+            String currency = normalizeCurrency(curRaw);
 
             // 4) 수신 시각(KST)
             ZonedDateTime receivedAt = Optional.ofNullable(msg.getReceivedDate())

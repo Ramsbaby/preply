@@ -78,7 +78,7 @@ public class DailySummaryJob {
         try {
             var compList = rateLoader.loadTodayCancellationCompensations();
             java.util.Set<String> existing = rows.stream().map(r -> r.student())
-                    .collect(java.util.stream.Collectors.toSet());
+                    .collect(Collectors.toSet());
             for (var re : compList) {
                 if (!existing.contains(re.studentName())) {
                     rows.add(new Row(re.studentName(), re.money()));
