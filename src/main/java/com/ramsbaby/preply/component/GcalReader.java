@@ -29,6 +29,9 @@ public class GcalReader {
     private final AppProps props;
     private final ResourceLoader resourceLoader;
 
+    private static record DateWindow(Instant start, Instant end) {
+    }
+
     private HttpCredentialsAdapter requestInitializer() throws IOException {
         String cfg = props.gcal().credentialsPath(); // "classpath:calendar-json/preply-sa.json"
         var resource = resourceLoader.getResource(cfg); // classpath:/ 파일:/ 둘 다 지원
@@ -41,45 +44,18 @@ public class GcalReader {
 
     public List<LessonEvent> loadTodayPreplyEvents() {
         try {
-            var http = GoogleNetHttpTransport.newTrustedTransport();
-            var json = GsonFactory.getDefaultInstance();
-            var reqInit = requestInitializer();
-
-            // 2) Calendar 클라이언트
-            Calendar client = new Calendar.Builder(http, json, reqInit)
-                    .setApplicationName("Preply Summary")
-                    .build();
-
-            // 3) 오늘 일정 조회
+            Calendar client = newCalendarClient();
             var tz = ZoneId.of(props.gcal().timeZone());
-            var todayStart = LocalDate.now(tz).atStartOfDay(tz).toInstant();
-            var tomorrowStart = LocalDate.now(tz).plusDays(1).atStartOfDay(tz).toInstant();
+            DateWindow win = todayWindow(tz);
 
             Events resp = client.events().list(props.gcal().calendarId())
-                    .setTimeMin(new com.google.api.client.util.DateTime(java.util.Date.from(todayStart)))
-                    .setTimeMax(new com.google.api.client.util.DateTime(java.util.Date.from(tomorrowStart)))
+                    .setTimeMin(new com.google.api.client.util.DateTime(java.util.Date.from(win.start())))
+                    .setTimeMax(new com.google.api.client.util.DateTime(java.util.Date.from(win.end())))
                     .setSingleEvents(true)
                     .setOrderBy("startTime")
                     .execute();
 
-            // 4) " - Preply lesson" 으로 끝나는 이벤트만 파싱
-            List<LessonEvent> out = new ArrayList<>();
-            String suffix = props.gcal().preplySuffix();
-            resp.getItems().forEach(item -> {
-                String summary = item.getSummary();
-                if (summary == null || !summary.endsWith(suffix))
-                    return;
-
-                String base = summary.substring(0, summary.length() - suffix.length()).trim();
-                String name = base.replaceAll("\\s*\\(.*?\\)\\s*", " ").replaceAll("\\s+", " ").trim();
-                long startMillis = item.getStart().getDateTime() != null
-                        ? item.getStart().getDateTime().getValue()
-                        : item.getStart().getDate().getValue();
-                var startAt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(startMillis), tz);
-
-                out.add(new LessonEvent(PreplyRateCacheLoader.normalize(name), startAt));
-            });
-            return out;
+            return toLessonEvents(resp, tz, props.gcal().preplySuffix());
 
         } catch (GoogleJsonResponseException gjre) {
             var code = gjre.getStatusCode();
@@ -98,6 +74,40 @@ public class GcalReader {
             throw new IllegalStateException("Google Calendar 읽기 실패(기타): " + e.getMessage(), e);
         }
 
+    }
+
+    private Calendar newCalendarClient() throws Exception {
+        var http = GoogleNetHttpTransport.newTrustedTransport();
+        var json = GsonFactory.getDefaultInstance();
+        var reqInit = requestInitializer();
+        return new Calendar.Builder(http, json, reqInit)
+                .setApplicationName("Preply Summary")
+                .build();
+    }
+
+    private DateWindow todayWindow(ZoneId tz) {
+        var start = LocalDate.now(tz).atStartOfDay(tz).toInstant();
+        var end = LocalDate.now(tz).plusDays(1).atStartOfDay(tz).toInstant();
+        return new DateWindow(start, end);
+    }
+
+    private List<LessonEvent> toLessonEvents(Events resp, ZoneId tz, String suffix) {
+        List<LessonEvent> out = new ArrayList<>();
+        resp.getItems().forEach(item -> {
+            String summary = item.getSummary();
+            if (summary == null || !summary.endsWith(suffix))
+                return;
+
+            String base = summary.substring(0, summary.length() - suffix.length()).trim();
+            String name = base.replaceAll("\\s*\\(.*?\\)\\s*", " ").replaceAll("\\s+", " ").trim();
+            long startMillis = item.getStart().getDateTime() != null
+                    ? item.getStart().getDateTime().getValue()
+                    : item.getStart().getDate().getValue();
+            var startAt = ZonedDateTime.ofInstant(Instant.ofEpochMilli(startMillis), tz);
+
+            out.add(new LessonEvent(PreplyRateCacheLoader.normalize(name), startAt));
+        });
+        return out;
     }
 
 }
