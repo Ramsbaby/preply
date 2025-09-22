@@ -30,6 +30,12 @@ public class DailySummaryJob {
     private final JavaMailSender mailSender;
     private final FxRateService fx;
 
+    private static record Row(String student, Money money) {
+    }
+
+    private static record MatchResult(List<Row> rows, List<String> unknown) {
+    }
+
     private static String fmtAmount(BigDecimal v, String currency) {
         if (v == null)
             return "-";
@@ -53,32 +59,41 @@ public class DailySummaryJob {
 
     // 수동 호출도 가능하게 분리
     public void generateAndSend() {
-        // 1) 메일에서 최근 N일 단가 캐시
-        Map<String, Money> rateByStudent = rateLoader.loadRates(); // key = normalize(name)
+        Map<String, Money> rateByStudent = rateLoader.loadRates();
+        List<LessonEvent> events = gcal.loadTodayPreplyEvents();
 
-        // 2) 캘린더 오늘 수업
-        List<LessonEvent> events = gcal.loadTodayPreplyEvents(); // name already normalized
+        MatchResult match = matchEventsWithRates(events, rateByStudent);
+        List<Row> rows = new ArrayList<>(match.rows());
+        addTodayCancellationCompensations(rows);
 
-        // 3) 매칭 & 합계 (+ 취소 보상 추가)
-        record Row(String student, Money money) {
-        }
+        Map<String, BigDecimal> totals = computeTotalsByCurrency(rows);
+        var tz = ZoneId.of(props.gcal().timeZone());
+        Set<String> currencies = collectCurrencies(totals);
+        BigDecimal krwTotal = computeKrwTotal(totals);
+
+        String body = buildEmailBody(totals, krwTotal, currencies, rows, match.unknown(), tz);
+        String subject = "[Preply] 오늘 레슨 요약 (" + LocalDate.now(tz) + ")";
+        String[] recipients = resolveRecipients();
+        sendEmail(subject, body, recipients);
+    }
+
+    private MatchResult matchEventsWithRates(List<LessonEvent> events, Map<String, Money> rateByStudent) {
         List<Row> rows = new ArrayList<>();
         List<String> unknown = new ArrayList<>();
-
         for (LessonEvent e : events) {
             Money rate = rateByStudent.get(e.studentName());
-            if (rate == null) {
+            if (rate == null)
                 unknown.add(e.studentName());
-            } else {
+            else
                 rows.add(new Row(e.studentName(), rate));
-            }
         }
+        return new MatchResult(rows, unknown);
+    }
 
-        // 3-1) 오늘 취소 보상 메일을 추가 (캘린더에 없더라도 추가)
+    private void addTodayCancellationCompensations(List<Row> rows) {
         try {
             var compList = rateLoader.loadTodayCancellationCompensations();
-            java.util.Set<String> existing = rows.stream().map(r -> r.student())
-                    .collect(Collectors.toSet());
+            java.util.Set<String> existing = rows.stream().map(Row::student).collect(Collectors.toSet());
             for (var re : compList) {
                 if (!existing.contains(re.studentName())) {
                     rows.add(new Row(re.studentName(), re.money()));
@@ -87,86 +102,93 @@ public class DailySummaryJob {
             }
         } catch (Exception ignore) {
         }
+    }
 
-        Map<String, BigDecimal> totals = rows.stream()
-                .collect(Collectors.groupingBy(r -> r.money().currency(),
-                        Collectors.mapping(r -> r.money().amount(),
-                                Collectors.reducing(BigDecimal.ZERO, BigDecimal::add))));
+    private Map<String, BigDecimal> computeTotalsByCurrency(List<Row> rows) {
+        return rows.stream().collect(Collectors.groupingBy(
+                r -> r.money().currency(),
+                Collectors.mapping(r -> r.money().amount(), Collectors.reducing(BigDecimal.ZERO, BigDecimal::add))));
+    }
 
-        var tz = ZoneId.of(props.gcal().timeZone());
+    private Set<String> collectCurrencies(Map<String, BigDecimal> totals) {
         Set<String> currencies = new LinkedHashSet<>();
         currencies.addAll(totals.keySet().stream().map(String::toUpperCase).toList());
+        return currencies;
+    }
 
-        BigDecimal krwTotal = totals.entrySet().stream()
+    private BigDecimal computeKrwTotal(Map<String, BigDecimal> totals) {
+        return totals.entrySet().stream()
                 .map(e -> e.getValue().multiply(fx.krwPer(e.getKey())))
                 .reduce(BigDecimal.ZERO, BigDecimal::add)
                 .setScale(0, java.math.RoundingMode.HALF_UP);
+    }
 
-        // 4) 메일 본문
+    private String buildEmailBody(
+            Map<String, BigDecimal> totals,
+            BigDecimal krwTotal,
+            Set<String> currencies,
+            List<Row> rows,
+            List<String> unknown,
+            ZoneId tz) {
         StringBuilder sb = new StringBuilder();
         sb.append("[Preply 오늘 수입 요약]\n");
 
-        // 통화별 합계
         if (totals.isEmpty())
             sb.append("- 합계: 없음\n");
         else
-            totals.forEach((cur, amt) -> sb.append("- ")
-                    .append(cur).append(": ").append(fmtAmount(amt, cur)).append('\n'));
+            totals.forEach((cur, amt) -> sb.append("- ").append(cur).append(": ")
+                    .append(fmtAmount(amt, cur)).append('\n'));
 
-        // KRW 환산 합계
         sb.append("\n[원화 환산 합계]\n");
         sb.append("- ").append(FxRateService.formatKrw(krwTotal)).append('\n');
 
-        // 적용 환율(+ 시각)
         sb.append("\n[적용 환율]\n");
         List<String> rateLines = new ArrayList<>();
         for (String cur : currencies) {
             if ("KRW".equalsIgnoreCase(cur))
                 continue;
-            var snap = fx.snapshot(cur); // rate + asOf
-            String asOfKst = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
-                    .withZone(tz).format(snap.asOf());
-            rateLines.add(String.format("- 1 %s = %s KRW (as of %s %s)",
-                    cur, fmtAmount(snap.krwPer(), "KRW"), asOfKst, tz));
+            var snap = fx.snapshot(cur);
+            String asOfKst = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(tz)
+                    .format(snap.asOf());
+            rateLines.add(
+                    String.format("- 1 %s = %s KRW (as of %s %s)", cur, fmtAmount(snap.krwPer(), "KRW"), asOfKst, tz));
         }
         if (rateLines.isEmpty())
             sb.append("- 환산 없음(KRW only)\n");
         else
             sb.append(String.join("\n", rateLines)).append('\n');
 
-        // 상세
         sb.append("\n[상세]\n");
         if (rows.isEmpty())
             sb.append("- 없음\n");
         else
-            rows.forEach(r -> sb.append("• ")
-                    .append(r.student()).append(" / ")
-                    .append(fmtAmount(r.money().amount(), r.money().currency()))
-                    .append('\n'));
+            rows.forEach(r -> sb.append("• ").append(r.student()).append(" / ")
+                    .append(fmtAmount(r.money().amount(), r.money().currency())).append('\n'));
 
         if (!unknown.isEmpty()) {
             sb.append("\n[단가 미매칭]\n");
             unknown.stream().sorted().forEach(n -> sb.append("• ").append(n).append('\n'));
         }
 
-        // 5) 네이버 SMTP로 발송
+        return sb.toString();
+    }
+
+    private String[] resolveRecipients() {
+        List<String> toList = new ArrayList<>();
+        if (props.mail().smtp().to() != null)
+            toList.addAll(props.mail().smtp().to());
+        toList.add(props.mail().smtp().from());
+        return toList.stream().filter(s -> s != null && !s.isBlank()).distinct().toArray(String[]::new);
+    }
+
+    private void sendEmail(String subject, String body, String[] recipients) {
         var msg = mailSender.createMimeMessage();
         try {
             var helper = new MimeMessageHelper(msg, false, "UTF-8");
             helper.setFrom(props.mail().smtp().from());
-            List<String> toList = new ArrayList<>();
-            if (props.mail().smtp().to() != null) {
-                toList.addAll(props.mail().smtp().to());
-            }
-            // 항상 본인(from)도 포함
-            toList.add(props.mail().smtp().from());
-            // 중복 제거 및 비어있지 않게 보장
-            String[] recipients = toList.stream().filter(s -> s != null && !s.isBlank())
-                    .distinct()
-                    .toArray(String[]::new);
             helper.setTo(recipients);
-            helper.setSubject("[Preply] 오늘 레슨 요약 (" + LocalDate.now(tz) + ")");
-            helper.setText(sb.toString(), false);
+            helper.setSubject(subject);
+            helper.setText(body, false);
             mailSender.send(msg);
         } catch (Exception e) {
             throw new IllegalStateException("요약 메일 발송 실패", e);
