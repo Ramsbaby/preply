@@ -14,3 +14,4 @@ create table if not exists preply_mail (
 create index if not exists idx_preply_mail_student_norm on preply_mail(student_normalized);
 create index if not exists idx_preply_mail_kind_received on preply_mail(kind, received_at desc);
 
+

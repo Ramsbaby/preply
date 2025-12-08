@@ -23,7 +23,8 @@ public class MailIngestionService {
     private final SupabaseMailRepository supabase;
 
     public IngestResult ingestYear() {
-        return ingest(365);
+        // 스타트업 부하 완화: 1년 → 6개월(180일)로 축소
+        return ingest(180);
     }
 
     public IngestResult ingest(int lookBackDays) {
@@ -46,4 +47,3 @@ public class MailIngestionService {
     public record IngestResult(int bookingCount, int compensationCount, boolean persisted) {
     }
 }
-
