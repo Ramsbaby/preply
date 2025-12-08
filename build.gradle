@@ -218,7 +218,7 @@ tasks.register('deploy') {
                 '--no-allow-unauthenticated',
                 '--cpu', '0.5', '--memory', '512Mi',
                 '--max-instances', '1', '--min-instances', '0',
-                '--timeout', '900s',
+                '--timeout', '300s',
                 '--quiet']
             if (!envPairs.isEmpty()) {
                 // flags 파일 대신 Cloud Run의 --env-vars-file 사용 (YAML)
