@@ -195,9 +195,11 @@ tasks.register('deploy') {
         ]
         def envMap = [:]
         keys.each { k ->
-            def v = yamlEnv[k]
-            if (!v) v = envFrom(k)
-            if (v) {
+            // OS/Gradle 프로퍼티 우선 → 로컬 YAML 보조
+            def v = envFrom(k)
+            if (!v) v = yamlEnv[k]
+            // placeholder 문자열("${...}")는 무시
+            if (v && !v.toString().contains('$')) {
                 def sv = v.toString()
                 envPairs << "${k}=${escapeVal(sv)}"
                 envMap[k] = sv
