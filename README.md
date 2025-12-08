@@ -27,6 +27,8 @@ Preply 수업 예약 메일과 Google Calendar를 읽어, 하루 수입 요약�
 - APP_GCAL_TZ: 타임존(기본 `Asia/Seoul`)
 - APP_GCAL_PREPLY_SUFFIX: 캘린더 이벤트 접미사(기본 ` - Preply lesson`)
 - APP_GCAL_LOOKBACK_DAYS: 메일에서 단가 캐시 조회 기간(일, 기본 90)
+- APP_SUPABASE_URL, APP_SUPABASE_KEY: Supabase REST 엔드포인트/서비스 키
+- APP_SUPABASE_TABLE: 메일 저장 테이블명(기본 `preply_mail`)
 - APP_AUTORUN: 애플리케이션 기동 시 자동 1회 실행 여부(true/false)
 
 참고: `src/main/resources/application.yml`은 위 환경변수 값을 참조하도록 구성되어 있습니다.
@@ -41,6 +43,8 @@ $env:APP_MAIL_FROM="your@naver.com"
 $env:APP_MAIL_TO="your@naver.com,ms6698@naver.com"
 $env:APP_GCAL_CREDENTIALS_PATH="file:C:/path/to/your-sa.json"
 $env:APP_GCAL_CALENDAR_ID="your_calendar_id@group.calendar.google.com"
+$env:APP_SUPABASE_URL="https://YOUR_PROJECT.supabase.co"
+$env:APP_SUPABASE_KEY="service-role-key"
 $env:APP_AUTORUN="true"
 
 ./gradlew bootRun
@@ -49,6 +53,19 @@ $env:APP_AUTORUN="true"
 수동 실행 엔드포인트:
 
 - GET `/run` → 당일 요약 생성 및 메일 발송
+
+## Supabase 연동(1년치 메일 캐시)
+
+- Spring `spring.datasource.*`(PostgreSQL, Supabase 호환)로 연결하며 `app.supabase.table`을 사용합니다. **table이 비어 있으면 Supabase 연동이 비활성화되어 IMAP 직읽기 모드로 동작합니다.**
+- Supabase가 설정되면 IMAP에서 최대 1년치(ingest 시 365일) 메일을 읽어 `preply_mail` 테이블에 upsert 후, 요약 시 DB 데이터를 사용합니다.
+- 미설정 시 기존처럼 IMAP에서 직접 읽어 메일을 매칭합니다.
+- 스키마 예시는 `supabase/schema.sql` 참고.
+
+테이블 주요 컬럼:
+
+- `message_id`(PK), `student_full_name`, `student_normalized`
+- `amount`, `currency`, `received_at`, `subject`, `snippet`
+- `kind` (`booking` | `cancellation_compensation`), `lesson_date`(보상 메일에 포함된 레슨 일자)
 
 ## 스케줄링
 

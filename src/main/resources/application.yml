@@ -18,6 +18,9 @@ app:
     timeZone: ${APP_GCAL_TZ:Asia/Seoul}
     preplySuffix: ${APP_GCAL_PREPLY_SUFFIX:" - Preply lesson"}
     lookBackDays: ${APP_GCAL_LOOKBACK_DAYS:90}
+  supabase:
+    # Supabase(PostgreSQL) 테이블명. 비워두면 Supabase 연동이 비활성화됩니다.
+    table: ${APP_SUPABASE_TABLE:preply_mail}
   autorun: ${APP_AUTORUN:false}
 
 spring:
@@ -30,6 +33,32 @@ spring:
       mail.smtp.auth: true
       mail.smtp.ssl.enable: true
       mail.smtp.starttls.enable: false
+  datasource:
+    # SQLite (로컬 테스트 전용 - 데이터 휘발성!)
+    # driver-class-name: org.sqlite.JDBC
+    # url: jdbc:sqlite:./data/newsletter.db
+
+    # PostgreSQL + Supabase (프로덕션 - 영구 저장)
+    driver-class-name: org.postgresql.Driver
+    # Supabase Session Pooler (5432 포트 사용)
+    # 세션 풀러는 연결이 지속되고 세션 상태를 유지하므로 prepareThreshold=0 설정 불필요
+    # DATABASE_URL이 설정되어 있으면 사용하고, 없으면 세션 풀러(5432 포트) URL 사용
+    url: ${DATABASE_URL:jdbc:postgresql://aws-1-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require&ApplicationName=newsletter-service}
+    username: ${DB_USERNAME:postgres.ddibysmqerrfxucjxotj}
+    password: ${DB_PASSWORD:urxQGLgy4kpRtGB5}
+
+    # HikariCP Connection Pool 설정
+    # Supabase 무료 플랜은 최대 연결 수가 매우 제한적(보통 15-20개)이므로 최소한의 커넥션만 사용
+    # 여러 인스턴스가 실행될 수 있으므로 인스턴스당 1개 커넥션만 사용
+    hikari:
+      maximum-pool-size: 1 # 인스턴스당 최대 1개 커넥션 (Supabase 무료 플랜 제한 대응)
+      minimum-idle: 0 # 최소 유휴 커넥션 0개 (필요할 때만 연결 생성)
+      connection-timeout: 10000 # 10초 (빠른 실패 처리로 연결 대기 시간 단축)
+      idle-timeout: 120000 # 2분 (유휴 커넥션 빠르게 반납)
+      max-lifetime: 300000 # 5분 (커넥션 수명 단축)
+      leak-detection-threshold: 60000 # 60초 이상 유지되면 누수 의심
+      # 커넥션 풀 모니터링 로깅 활성화
+      register-mbeans: true
 
 server:
   port: ${PORT:8080}

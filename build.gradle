@@ -18,6 +18,7 @@ repositories {
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter'       // 핵심 (context/beans 포함)
     implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-jdbc'  // Supabase(Postgres) 연동
 
 
     implementation platform('com.google.cloud:libraries-bom:26.45.0')
@@ -38,6 +39,9 @@ dependencies {
     annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'com.h2database:h2'
+
+    runtimeOnly 'org.postgresql:postgresql'
     testCompileOnly 'org.projectlombok:lombok:1.18.32'
     testAnnotationProcessor 'org.projectlombok:lombok:1.18.32'
 }
@@ -145,6 +149,9 @@ def loadLocalYamlEnv = {
     env['APP_GCAL_TZ'] = val('app.gcal.timeZone')
     env['APP_GCAL_PREPLY_SUFFIX'] = val('app.gcal.preplySuffix')
     env['APP_GCAL_LOOKBACK_DAYS'] = val('app.gcal.lookBackDays')
+    env['APP_SUPABASE_URL'] = val('app.supabase.url')
+    env['APP_SUPABASE_KEY'] = val('app.supabase.key')
+    env['APP_SUPABASE_TABLE'] = val('app.supabase.table')
     env['APP_AUTORUN'] = val('app.autorun')
     env.findAll { k, v -> v != null && v.toString().trim() }
 }
@@ -183,6 +190,7 @@ tasks.register('deploy') {
             'APP_MAIL_SMTP_HOST','APP_MAIL_SMTP_PORT',
             'APP_MAIL_FROM','APP_MAIL_TO',
             'APP_GCAL_CREDENTIALS_PATH','APP_GCAL_CALENDAR_ID','APP_GCAL_TZ','APP_GCAL_PREPLY_SUFFIX','APP_GCAL_LOOKBACK_DAYS',
+            'APP_SUPABASE_URL','APP_SUPABASE_KEY','APP_SUPABASE_TABLE',
             'APP_AUTORUN'
         ]
         def envMap = [:]

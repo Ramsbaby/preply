@@ -13,6 +13,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -20,6 +21,7 @@ import org.springframework.stereotype.Service;
 
 import com.ramsbaby.preply.config.AppProps;
 import com.ramsbaby.preply.dto.Money;
+import com.ramsbaby.preply.dto.ParsedMail;
 import com.ramsbaby.preply.dto.RateEntry;
 
 import jakarta.mail.FetchProfile;
@@ -45,6 +47,7 @@ public class PreplyRateCacheLoader {
 
     private static final ZoneId KST = ZoneId.of("Asia/Seoul");
     private final AppProps props;
+    private static final int SNIPPET_LIMIT = 200;
 
     // 이름 정규화(캘린더 매칭용): 괄호 alias 제거, 접미사/여백 정리, 케이스-인센시티브 키
     public static String normalize(String raw) {
@@ -111,55 +114,7 @@ public class PreplyRateCacheLoader {
 
     public Map<String, Money> loadRates() {
         Map<String, Money> rateByStudent = new HashMap<>();
-        Properties p = new Properties();
-        p.put("mail.store.protocol", "imaps");
-        p.put("mail.imaps.host", props.mail().imap().host());
-        p.put("mail.imaps.port", String.valueOf(props.mail().imap().port()));
-        p.put("mail.imaps.ssl.enable", "true");
-        p.put("mail.mime.allowutf8", "true");
-
-        Session session = Session.getInstance(p);
-        try (Store store = session.getStore("imaps")) {
-            store.connect(props.mail().user(), props.mail().pass());
-            Folder inbox = store.getFolder("INBOX");
-            inbox.open(Folder.READ_ONLY);
-
-            // 기간: lookBackDays ~ 내일 00:00
-            LocalDate today = LocalDate.now(KST);
-            Date start = Date.from(today.minusDays(props.gcal().lookBackDays()).atStartOfDay(KST).toInstant());
-            Date end = Date.from(today.plusDays(1).atStartOfDay(KST).toInstant());
-
-            // 제목(국/영) 기준으로만 검색 후, 날짜 범위는 KST로 로컬 필터링
-            SearchTerm term = new OrTerm(
-                    new jakarta.mail.search.SubjectTerm("예약했어요"),
-                    new jakarta.mail.search.SubjectTerm("scheduled a new lesson"));
-
-            Message[] found = inbox.search(term);
-
-            // 프리페치
-            FetchProfile fp = new FetchProfile();
-            fp.add(FetchProfile.Item.ENVELOPE);
-            fp.add(FetchProfile.Item.CONTENT_INFO);
-            inbox.fetch(found, fp);
-
-            for (Message m : found) {
-                if (!isInRange(m, start, end))
-                    continue;
-                extractRate(m).ifPresent(re -> {
-                    String key = normalize(re.studentName());
-                    // 최신 메일 우선(수신일이 더 최근이면 갱신)
-                    Money prev = rateByStudent.get(key);
-                    if (prev == null)
-                        rateByStudent.put(key, re.money());
-                    else
-                        rateByStudent.put(key, re.money()); // 필요 시 통화 우선 규칙 추가
-                });
-            }
-            inbox.close(false);
-        } catch (MessagingException e) {
-            throw new IllegalStateException("IMAP 읽기 실패", e);
-        }
-
+        fetchBookings(props.gcal().lookBackDays()).forEach(pm -> rateByStudent.put(pm.studentNormalized(), pm.money()));
         return rateByStudent;
     }
 
@@ -172,6 +127,17 @@ public class PreplyRateCacheLoader {
      * - 금액/통화(예: 22.00 $, 22 USD 등) 추출
      */
     public List<RateEntry> loadTodayCancellationCompensations() {
+        LocalDate today = LocalDate.now(KST);
+        return fetchCancellationCompensations(props.gcal().lookBackDays(), today).stream()
+                .filter(pm -> pm.lessonDate() != null && pm.lessonDate().equals(today))
+                .map(pm -> new RateEntry(pm.studentNormalized(), pm.money(), pm.receivedAt()))
+                .toList();
+    }
+
+    /**
+     * 예약 메일을 lookBackDays 범위에서 파싱하여 반환한다.
+     */
+    public List<ParsedMail> fetchBookings(int lookBackDays) {
         Properties p = new Properties();
         p.put("mail.store.protocol", "imaps");
         p.put("mail.imaps.host", props.mail().imap().host());
@@ -186,7 +152,50 @@ public class PreplyRateCacheLoader {
             inbox.open(Folder.READ_ONLY);
 
             LocalDate today = LocalDate.now(KST);
-            Date start = Date.from(today.minusDays(props.gcal().lookBackDays()).atStartOfDay(KST).toInstant());
+            Date start = Date.from(today.minusDays(lookBackDays).atStartOfDay(KST).toInstant());
+            Date end = Date.from(today.plusDays(1).atStartOfDay(KST).toInstant());
+
+            SearchTerm term = new OrTerm(
+                    new jakarta.mail.search.SubjectTerm("예약했어요"),
+                    new jakarta.mail.search.SubjectTerm("scheduled a new lesson"));
+
+            Message[] found = inbox.search(term);
+
+            FetchProfile fp = new FetchProfile();
+            fp.add(FetchProfile.Item.ENVELOPE);
+            fp.add(FetchProfile.Item.CONTENT_INFO);
+            inbox.fetch(found, fp);
+
+            List<ParsedMail> results = Arrays.stream(found)
+                    .filter(m -> isInRange(m, start, end))
+                    .map(this::parseBooking)
+                    .flatMap(Optional::stream)
+                    .toList();
+            inbox.close(false);
+            return results;
+        } catch (MessagingException e) {
+            throw new IllegalStateException("IMAP 읽기 실패", e);
+        }
+    }
+
+    /**
+     * 취소 보상 메일을 lookBackDays 범위에서 파싱하여 반환한다.
+     */
+    public List<ParsedMail> fetchCancellationCompensations(int lookBackDays, LocalDate today) {
+        Properties p = new Properties();
+        p.put("mail.store.protocol", "imaps");
+        p.put("mail.imaps.host", props.mail().imap().host());
+        p.put("mail.imaps.port", String.valueOf(props.mail().imap().port()));
+        p.put("mail.imaps.ssl.enable", "true");
+        p.put("mail.mime.allowutf8", "true");
+
+        Session session = Session.getInstance(p);
+        try (Store store = session.getStore("imaps")) {
+            store.connect(props.mail().user(), props.mail().pass());
+            Folder inbox = store.getFolder("INBOX");
+            inbox.open(Folder.READ_ONLY);
+
+            Date start = Date.from(today.minusDays(lookBackDays).atStartOfDay(KST).toInstant());
             Date end = Date.from(today.plusDays(1).atStartOfDay(KST).toInstant());
 
             Message[] found = inbox.search(new jakarta.mail.search.SubjectTerm("수업을 취소했습니다"));
@@ -195,7 +204,7 @@ public class PreplyRateCacheLoader {
             fp.add(FetchProfile.Item.CONTENT_INFO);
             inbox.fetch(found, fp);
 
-            List<RateEntry> results = Arrays.stream(found)
+            List<ParsedMail> results = Arrays.stream(found)
                     .filter(m -> isInRange(m, start, end))
                     .map(m -> parseCancellationCompensation(m, today))
                     .flatMap(Optional::stream)
@@ -208,7 +217,7 @@ public class PreplyRateCacheLoader {
         }
     }
 
-    private Optional<RateEntry> parseCancellationCompensation(Message m, LocalDate today) {
+    private Optional<ParsedMail> parseCancellationCompensation(Message m, LocalDate today) {
         try {
             String html = extractHtml(m).orElseGet(() -> {
                 try {
@@ -244,7 +253,19 @@ public class PreplyRateCacheLoader {
                     .map(d -> d.toInstant().atZone(KST))
                     .orElse(ZonedDateTime.now(KST));
 
-            return Optional.of(new RateEntry(normalize(student), new Money(amount, currency), receivedAt));
+            String msgId = messageId(m, receivedAt, student);
+            String snippet = snippet(cleaned);
+
+            return Optional.of(new ParsedMail(
+                    msgId,
+                    student,
+                    normalize(student),
+                    new Money(amount, currency),
+                    receivedAt,
+                    Optional.ofNullable(m.getSubject()).orElse(""),
+                    snippet,
+                    "cancellation_compensation",
+                    lessonDate));
         } catch (Exception e) {
             log.warn("취소 보상 파싱 오류: {}", e.toString());
             return Optional.empty();
@@ -303,7 +324,7 @@ public class PreplyRateCacheLoader {
         }
     }
 
-    private Optional<RateEntry> extractRate(Message msg) {
+    private Optional<ParsedMail> parseBooking(Message msg) {
         try {
             // 1) HTML 우선으로 꺼내서 평탄화
             String html = extractHtml(msg).orElseGet(() -> {
@@ -375,8 +396,20 @@ public class PreplyRateCacheLoader {
                     .map(d -> d.toInstant().atZone(KST))
                     .orElse(ZonedDateTime.now(KST));
 
-            // 5) 캐싱에 들어갈 엔트리 반환
-            return Optional.of(new RateEntry(student, new Money(amount, currency), receivedAt));
+            String msgId = messageId(msg, receivedAt, student);
+            String snippet = snippet(cleaned);
+
+            // 5) 결과 반환
+            return Optional.of(new ParsedMail(
+                    msgId,
+                    student,
+                    normalize(student),
+                    new Money(amount, currency),
+                    receivedAt,
+                    Optional.ofNullable(msg.getSubject()).orElse(""),
+                    snippet,
+                    "booking",
+                    null));
 
         } catch (Exception e) {
             // log.warn("extractRate error: {}", e.toString());
@@ -414,5 +447,28 @@ public class PreplyRateCacheLoader {
         if (p.isMimeType("message/rfc822"))
             return extractText((Part) p.getContent());
         return Optional.empty();
+    }
+
+    private static String snippet(String cleaned) {
+        if (cleaned == null)
+            return "";
+        String s = cleaned.trim();
+        return s.length() > SNIPPET_LIMIT ? s.substring(0, SNIPPET_LIMIT) : s;
+    }
+
+    private static String messageId(Message m, ZonedDateTime receivedAt, String student) {
+        try {
+            String[] ids = m.getHeader("Message-ID");
+            if (ids != null && ids.length > 0 && ids[0] != null && !ids[0].isBlank())
+                return ids[0];
+        } catch (Exception ignore) {
+        }
+        String subj = "";
+        try {
+            subj = Optional.ofNullable(m.getSubject()).orElse("");
+        } catch (Exception ignore) {
+        }
+        String seed = subj + "|" + receivedAt.toString() + "|" + student;
+        return UUID.nameUUIDFromBytes(seed.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
     }
 }

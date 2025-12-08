@@ -17,6 +17,7 @@ import org.springframework.stereotype.Component;
 import com.ramsbaby.preply.config.AppProps;
 import com.ramsbaby.preply.dto.LessonEvent;
 import com.ramsbaby.preply.dto.Money;
+import com.ramsbaby.preply.dto.RateEntry;
 
 import lombok.RequiredArgsConstructor;
 
@@ -26,6 +27,8 @@ public class DailySummaryJob {
 
     private final AppProps props;
     private final PreplyRateCacheLoader rateLoader;
+    private final MailIngestionService mailIngestionService;
+    private final SupabaseMailRepository supabase;
     private final GcalReader gcal;
     private final JavaMailSender mailSender;
     private final FxRateService fx;
@@ -59,12 +62,23 @@ public class DailySummaryJob {
 
     // 수동 호출도 가능하게 분리
     public void generateAndSend() {
-        Map<String, Money> rateByStudent = rateLoader.loadRates();
+        Map<String, Money> rateByStudent;
+        List<RateEntry> compensations;
+
+        if (supabase.enabled()) {
+            mailIngestionService.ingestYear();
+            rateByStudent = supabase.findLatestBookingRates();
+            compensations = supabase.findTodayCompensations(ZoneId.of(props.gcal().timeZone()));
+        } else {
+            rateByStudent = rateLoader.loadRates();
+            compensations = rateLoader.loadTodayCancellationCompensations();
+        }
+
         List<LessonEvent> events = gcal.loadTodayPreplyEvents();
 
         MatchResult match = matchEventsWithRates(events, rateByStudent);
         List<Row> rows = new ArrayList<>(match.rows());
-        addTodayCancellationCompensations(rows);
+        addCompensations(rows, compensations);
 
         Map<String, BigDecimal> totals = computeTotalsByCurrency(rows);
         var tz = ZoneId.of(props.gcal().timeZone());
@@ -90,9 +104,8 @@ public class DailySummaryJob {
         return new MatchResult(rows, unknown);
     }
 
-    private void addTodayCancellationCompensations(List<Row> rows) {
+    private void addCompensations(List<Row> rows, List<RateEntry> compList) {
         try {
-            var compList = rateLoader.loadTodayCancellationCompensations();
             java.util.Set<String> existing = rows.stream().map(Row::student).collect(Collectors.toSet());
             for (var re : compList) {
                 if (!existing.contains(re.studentName())) {
