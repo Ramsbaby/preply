@@ -24,7 +24,7 @@ dependencies {
     implementation platform('com.google.cloud:libraries-bom:26.45.0')
     implementation("org.springframework.boot:spring-boot-starter-mail")   // SMTP 발송
     implementation("org.jsoup:jsoup:1.17.2")                              // HTML 파싱
-    implementation("org.springframework.boot:spring-boot-starter-webflux")// WebClient(웹훅)
+    // Web stack은 서블릿만 사용 (WebClient 미사용) → webflux 제거
 
     implementation 'com.google.apis:google-api-services-calendar:v3-rev20250404-2.0.0'
     implementation 'com.google.api-client:google-api-client:2.5.0'
@@ -42,6 +42,7 @@ dependencies {
     testImplementation 'com.h2database:h2'
 
     runtimeOnly 'org.postgresql:postgresql'
+    runtimeOnly 'com.h2database:h2'
     testCompileOnly 'org.projectlombok:lombok:1.18.32'
     testAnnotationProcessor 'org.projectlombok:lombok:1.18.32'
 }

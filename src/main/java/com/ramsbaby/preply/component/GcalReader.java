@@ -8,9 +8,6 @@ import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.springframework.core.io.ResourceLoader;
-import org.springframework.stereotype.Service;
-
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport;
 import com.google.api.client.googleapis.json.GoogleJsonResponseException;
 import com.google.api.client.json.gson.GsonFactory;
@@ -20,12 +17,16 @@ import com.google.auth.http.HttpCredentialsAdapter;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.ramsbaby.preply.config.AppProps;
 import com.ramsbaby.preply.dto.LessonEvent;
+import com.ramsbaby.preply.port.LessonEventsPort;
+
+import org.springframework.core.io.ResourceLoader;
+import org.springframework.stereotype.Service;
 
 import lombok.RequiredArgsConstructor;
 
 @Service
 @RequiredArgsConstructor
-public class GcalReader {
+public class GcalReader implements LessonEventsPort {
     private final AppProps props;
     private final ResourceLoader resourceLoader;
 

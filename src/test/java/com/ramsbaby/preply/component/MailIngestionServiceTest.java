@@ -90,7 +90,8 @@ class MailIngestionServiceTest {
         return new AppProps(
                 new AppProps.Mail("", "", new AppProps.Mail.Imap("", 0), new AppProps.Mail.Smtp("", 0, "", List.of())),
                 new AppProps.Gcal("", "", "", "", 0),
-                new AppProps.Supabase("", "", "preply_mail"),
+                new AppProps.Supabase("", "", "preply_mail", true),
+                new AppProps.Run(""),
                 false
         );
     }

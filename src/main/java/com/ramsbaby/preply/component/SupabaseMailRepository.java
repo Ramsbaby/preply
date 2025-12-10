@@ -10,20 +10,21 @@ import java.util.Map;
 
 import javax.sql.DataSource;
 
-import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
-import org.springframework.stereotype.Service;
-
 import com.ramsbaby.preply.config.AppProps;
 import com.ramsbaby.preply.dto.Money;
 import com.ramsbaby.preply.dto.ParsedMail;
 import com.ramsbaby.preply.dto.RateEntry;
+import com.ramsbaby.preply.port.MailCachePort;
+
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.stereotype.Service;
 
 import lombok.extern.slf4j.Slf4j;
 
 @Service
 @Slf4j
-public class SupabaseMailRepository {
+public class SupabaseMailRepository implements MailCachePort {
 
     private final AppProps props;
     private final NamedParameterJdbcTemplate jdbc;
@@ -36,7 +37,10 @@ public class SupabaseMailRepository {
     }
 
     public boolean enabled() {
-        return props.supabase() != null && props.supabase().table() != null && !props.supabase().table().isBlank();
+        return props.supabase() != null
+                && props.supabase().enabled()
+                && props.supabase().table() != null
+                && !props.supabase().table().isBlank();
     }
 
     public void upsert(List<ParsedMail> mails) {

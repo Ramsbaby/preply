@@ -18,6 +18,10 @@ import com.ramsbaby.preply.config.AppProps;
 import com.ramsbaby.preply.dto.LessonEvent;
 import com.ramsbaby.preply.dto.Money;
 import com.ramsbaby.preply.dto.RateEntry;
+import com.ramsbaby.preply.port.ExchangeRatePort;
+import com.ramsbaby.preply.port.LessonEventsPort;
+import com.ramsbaby.preply.port.MailCachePort;
+import com.ramsbaby.preply.port.RateLoaderPort;
 
 import lombok.RequiredArgsConstructor;
 
@@ -26,12 +30,11 @@ import lombok.RequiredArgsConstructor;
 public class DailySummaryJob {
 
     private final AppProps props;
-    private final PreplyRateCacheLoader rateLoader;
-    private final MailIngestionService mailIngestionService;
-    private final SupabaseMailRepository supabase;
-    private final GcalReader gcal;
+    private final RateLoaderPort rateLoader;
+    private final MailCachePort supabase;
+    private final LessonEventsPort gcal;
     private final JavaMailSender mailSender;
-    private final FxRateService fx;
+    private final ExchangeRatePort fx;
 
     private static record Row(String student, Money money) {
     }
@@ -66,7 +69,7 @@ public class DailySummaryJob {
         List<RateEntry> compensations;
 
         if (supabase.enabled()) {
-            mailIngestionService.ingestYear();
+            // Supabase에 캐시된 데이터만 사용 (ingest는 별도 스케줄로 수행)
             rateByStudent = supabase.findLatestBookingRates();
             compensations = supabase.findTodayCompensations(ZoneId.of(props.gcal().timeZone()));
         } else {
@@ -83,9 +86,22 @@ public class DailySummaryJob {
         Map<String, BigDecimal> totals = computeTotalsByCurrency(rows);
         var tz = ZoneId.of(props.gcal().timeZone());
         Set<String> currencies = collectCurrencies(totals);
-        BigDecimal krwTotal = computeKrwTotal(totals);
+        Map<String, FxRateService.Snapshot> rateSnapshots = new java.util.HashMap<>();
+        Map<String, String> rateErrors = new java.util.HashMap<>();
+        currencies.forEach(cur -> {
+            if ("KRW".equalsIgnoreCase(cur)) {
+                return;
+            }
+            try {
+                rateSnapshots.put(cur, fx.snapshot(cur));
+            } catch (Exception e) {
+                rateErrors.put(cur, e.getMessage() != null ? e.getMessage() : "unknown error");
+            }
+        });
+        BigDecimal krwTotal = computeKrwTotal(totals, rateSnapshots, rateErrors);
 
-        String body = buildEmailBody(totals, krwTotal, currencies, rows, match.unknown(), tz);
+        String body = buildEmailBody(totals, krwTotal, currencies, rows, match.unknown(), tz, rateSnapshots,
+                rateErrors);
         String subject = "[Preply] 오늘 레슨 요약 (" + LocalDate.now(tz) + ")";
         String[] recipients = resolveRecipients();
         sendEmail(subject, body, recipients);
@@ -129,11 +145,25 @@ public class DailySummaryJob {
         return currencies;
     }
 
-    private BigDecimal computeKrwTotal(Map<String, BigDecimal> totals) {
-        return totals.entrySet().stream()
-                .map(e -> e.getValue().multiply(fx.krwPer(e.getKey())))
-                .reduce(BigDecimal.ZERO, BigDecimal::add)
-                .setScale(0, java.math.RoundingMode.HALF_UP);
+    private BigDecimal computeKrwTotal(Map<String, BigDecimal> totals,
+            Map<String, FxRateService.Snapshot> rateSnapshots,
+            Map<String, String> rateErrors) {
+        BigDecimal acc = BigDecimal.ZERO;
+        for (var e : totals.entrySet()) {
+            String cur = e.getKey();
+            BigDecimal amt = e.getValue();
+            if ("KRW".equalsIgnoreCase(cur)) {
+                acc = acc.add(amt);
+                continue;
+            }
+            var snap = rateSnapshots.get(cur);
+            if (snap == null) {
+                // 환율 실패 시 스킵하고 이후 본문에서 실패 정보 노출
+                continue;
+            }
+            acc = acc.add(amt.multiply(snap.krwPer()));
+        }
+        return acc.setScale(0, java.math.RoundingMode.HALF_UP);
     }
 
     private String buildEmailBody(
@@ -142,7 +172,9 @@ public class DailySummaryJob {
             Set<String> currencies,
             List<Row> rows,
             List<String> unknown,
-            ZoneId tz) {
+            ZoneId tz,
+            Map<String, FxRateService.Snapshot> rateSnapshots,
+            Map<String, String> rateErrors) {
         StringBuilder sb = new StringBuilder();
         sb.append("[Preply 오늘 수입 요약]\n");
 
@@ -160,7 +192,15 @@ public class DailySummaryJob {
         for (String cur : currencies) {
             if ("KRW".equalsIgnoreCase(cur))
                 continue;
-            var snap = fx.snapshot(cur);
+            if (rateErrors.containsKey(cur)) {
+                rateLines.add(String.format("- %s: 조회 실패 (%s)", cur, rateErrors.get(cur)));
+                continue;
+            }
+            var snap = rateSnapshots.get(cur);
+            if (snap == null) {
+                rateLines.add(String.format("- %s: 조회 실패 (unknown)", cur));
+                continue;
+            }
             String asOfKst = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(tz)
                     .format(snap.asOf());
             rateLines.add(

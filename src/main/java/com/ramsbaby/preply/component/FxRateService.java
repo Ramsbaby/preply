@@ -2,8 +2,6 @@ package com.ramsbaby.preply.component;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.stereotype.Service;
-
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.URI;
@@ -19,8 +17,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.ramsbaby.preply.port.ExchangeRatePort;
+
+import org.springframework.stereotype.Service;
+
 @Service
-public class FxRateService {
+public class FxRateService implements ExchangeRatePort {
 
     private static final Duration TTL = Duration.ofMinutes(30);
     private final HttpClient http = HttpClient.newBuilder()

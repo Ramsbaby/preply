@@ -17,12 +17,13 @@ import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.springframework.stereotype.Service;
-
 import com.ramsbaby.preply.config.AppProps;
 import com.ramsbaby.preply.dto.Money;
 import com.ramsbaby.preply.dto.ParsedMail;
 import com.ramsbaby.preply.dto.RateEntry;
+import com.ramsbaby.preply.port.RateLoaderPort;
+
+import org.springframework.stereotype.Service;
 
 import jakarta.mail.FetchProfile;
 import jakarta.mail.Folder;
@@ -43,7 +44,7 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 @RequiredArgsConstructor
 @Slf4j
-public class PreplyRateCacheLoader {
+public class PreplyRateCacheLoader implements RateLoaderPort {
 
     private static final ZoneId KST = ZoneId.of("Asia/Seoul");
     private final AppProps props;

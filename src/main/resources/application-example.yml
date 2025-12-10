@@ -18,6 +18,13 @@ app:
     timeZone: Asia/Seoul
     preplySuffix: " - Preply lesson"
     lookBackDays: 90
+  supabase:
+    enabled: false
+    table: preply_mail
+  run:
+    token: "" # 예: "my-secret-token" → 헤더 X-Run-Token 으로 전달
+  scheduler:
+    enabled: true
 
 spring:
   mail:

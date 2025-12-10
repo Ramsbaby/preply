@@ -5,7 +5,7 @@ import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "app")
-public record AppProps(Mail mail, Gcal gcal, Supabase supabase, boolean autorun) {
+public record AppProps(Mail mail, Gcal gcal, Supabase supabase, Run run, boolean autorun) {
     public record Mail(String user, String pass, Imap imap, Smtp smtp) {
         public record Imap(String host, int port) {
         }
@@ -18,6 +18,9 @@ public record AppProps(Mail mail, Gcal gcal, Supabase supabase, boolean autorun)
             int lookBackDays) {
     }
 
-    public record Supabase(String url, String key, String table) {
+    public record Supabase(String url, String key, String table, boolean enabled) {
+    }
+
+    public record Run(String token) {
     }
 }

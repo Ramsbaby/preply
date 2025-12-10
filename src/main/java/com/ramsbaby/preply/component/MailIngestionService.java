@@ -5,9 +5,11 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.springframework.stereotype.Service;
-
 import com.ramsbaby.preply.dto.ParsedMail;
+import com.ramsbaby.preply.port.MailCachePort;
+import com.ramsbaby.preply.port.RateLoaderPort;
+
+import org.springframework.stereotype.Service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -19,8 +21,8 @@ public class MailIngestionService {
 
     private static final ZoneId KST = ZoneId.of("Asia/Seoul");
 
-    private final PreplyRateCacheLoader loader;
-    private final SupabaseMailRepository supabase;
+    private final RateLoaderPort loader;
+    private final MailCachePort supabase;
 
     public IngestResult ingestYear() {
         // 스타트업 부하 완화: 1년 → 6개월(180일)로 축소
