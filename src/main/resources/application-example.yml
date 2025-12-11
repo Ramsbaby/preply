@@ -25,6 +25,7 @@ app:
     token: "" # 예: "my-secret-token" → 헤더 X-Run-Token 으로 전달
   scheduler:
     enabled: true
+  autorun: false
 
 spring:
   mail:

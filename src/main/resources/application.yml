@@ -26,7 +26,7 @@ app:
     token: ${APP_RUN_TOKEN:}
   scheduler:
     enabled: ${APP_SCHEDULER_ENABLED:true}
-  autorun: ${APP_AUTORUN:false}
+  autorun: false
 
 spring:
   mail:
