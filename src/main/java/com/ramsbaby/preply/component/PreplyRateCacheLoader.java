@@ -17,13 +17,13 @@ import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.springframework.stereotype.Service;
+
 import com.ramsbaby.preply.config.AppProps;
 import com.ramsbaby.preply.dto.Money;
 import com.ramsbaby.preply.dto.ParsedMail;
 import com.ramsbaby.preply.dto.RateEntry;
 import com.ramsbaby.preply.port.RateLoaderPort;
-
-import org.springframework.stereotype.Service;
 
 import jakarta.mail.FetchProfile;
 import jakarta.mail.Folder;
@@ -102,6 +102,10 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
 
     // --------- Patterns & Functional Predicates (reuse across parsers) ---------
     private static final Pattern P_LESSON_DATE = Pattern.compile("레슨\\s*[:：]\\s*(\\d{1,2})월\\s*(\\d{1,2})일");
+    private static final Pattern P_LESSON_START_KO = Pattern.compile("레슨\\s*시작\\s*[:：]\\s*(\\d{1,2})월\\s*(\\d{1,2})일");
+    private static final Pattern P_LESSON_START_EN = Pattern.compile(
+            "Lesson\\s*time\\s*[:：].*?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\s+(\\d{1,2})",
+            Pattern.CASE_INSENSITIVE);
     private static final Pattern P_STUDENT_BODY = Pattern.compile(
             "학생\\s*[:：]\\s*(.+?)\\s*(?=(레슨|Lesson|비용|Price)\\s*[:：]|$)",
             Pattern.CASE_INSENSITIVE);
@@ -282,6 +286,69 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
         return LocalDate.of(today.getYear(), mm, dd);
     }
 
+    /**
+     * Booking 메일에서 레슨 시작 날짜를 파싱한다.
+     * 한글: "레슨 시작: MM월 DD일"
+     * 영문: "Lesson time: ... MMM DD"
+     * 연도는 receivedDate 기준으로 추론 (과거 날짜면 다음 년도로 간주)
+     */
+    private LocalDate extractLessonDateFromBooking(String cleaned, LocalDate receivedDate) {
+        // 한글 패턴 시도
+        Matcher mkO = P_LESSON_START_KO.matcher(cleaned);
+        if (mkO.find()) {
+            int mm = Integer.parseInt(mkO.group(1));
+            int dd = Integer.parseInt(mkO.group(2));
+            return inferLessonYear(receivedDate, mm, dd);
+        }
+
+        // 영문 패턴 시도
+        Matcher mEn = P_LESSON_START_EN.matcher(cleaned);
+        if (mEn.find()) {
+            String monthStr = mEn.group(1);
+            int dd = Integer.parseInt(mEn.group(2));
+            int mm = parseEnglishMonth(monthStr);
+            if (mm > 0) {
+                return inferLessonYear(receivedDate, mm, dd);
+            }
+        }
+
+        return null;
+    }
+
+    private static int parseEnglishMonth(String month) {
+        return switch (month.toLowerCase()) {
+            case "jan", "january" -> 1;
+            case "feb", "february" -> 2;
+            case "mar", "march" -> 3;
+            case "apr", "april" -> 4;
+            case "may" -> 5;
+            case "jun", "june" -> 6;
+            case "jul", "july" -> 7;
+            case "aug", "august" -> 8;
+            case "sep", "september" -> 9;
+            case "oct", "october" -> 10;
+            case "nov", "november" -> 11;
+            case "dec", "december" -> 12;
+            default -> 0;
+        };
+    }
+
+    /**
+     * 메일 수신 날짜를 기준으로 레슨 날짜의 연도를 추론한다.
+     * 파싱된 MM-DD가 수신 날짜보다 과거면 다음 년도로 간주.
+     */
+    private static LocalDate inferLessonYear(LocalDate receivedDate, int month, int day) {
+        int year = receivedDate.getYear();
+        LocalDate candidate = LocalDate.of(year, month, day);
+
+        // 파싱된 날짜가 수신 날짜보다 7일 이상 과거면 다음 년도로 간주
+        if (candidate.plusDays(7).isBefore(receivedDate)) {
+            candidate = LocalDate.of(year + 1, month, day);
+        }
+
+        return candidate;
+    }
+
     private Optional<String> extractStudent(String cleaned) {
         return Optional.ofNullable(firstMatch(cleaned, P_STUDENT_BODY));
     }
@@ -397,10 +464,16 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
                     .map(d -> d.toInstant().atZone(KST))
                     .orElse(ZonedDateTime.now(KST));
 
+            // 5) 레슨 날짜 파싱
+            LocalDate lessonDate = extractLessonDateFromBooking(cleaned, receivedAt.toLocalDate());
+            if (lessonDate == null) {
+                return Optional.empty();
+            }
+
             String msgId = messageId(msg, receivedAt, student);
             String snippet = snippet(cleaned);
 
-            // 5) 결과 반환
+            // 6) 결과 반환
             return Optional.of(new ParsedMail(
                     msgId,
                     student,
@@ -410,7 +483,7 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
                     Optional.ofNullable(msg.getSubject()).orElse(""),
                     snippet,
                     "booking",
-                    null));
+                    lessonDate));
 
         } catch (Exception e) {
             // log.warn("extractRate error: {}", e.toString());

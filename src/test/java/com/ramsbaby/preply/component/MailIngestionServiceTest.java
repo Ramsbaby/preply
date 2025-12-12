@@ -36,16 +36,17 @@ class MailIngestionServiceTest {
 
         jdbc.execute("""
                 create table if not exists preply_mail (
-                  message_id varchar primary key,
-                  student_full_name varchar,
+                  message_id varchar,
+                  student_full_name varchar not null,
                   student_normalized varchar,
-                  amount numeric,
+                  amount numeric not null,
                   currency varchar,
-                  received_at timestamp with time zone,
+                  received_at timestamp with time zone not null,
                   subject varchar,
                   snippet varchar,
                   kind varchar,
-                  lesson_date date
+                  lesson_date date not null,
+                  primary key (student_full_name, lesson_date)
                 );
                 """);
         jdbc.execute("truncate table preply_mail");
@@ -55,8 +56,7 @@ class MailIngestionServiceTest {
     void ingestYear_inserts_bookings_into_db() {
         loader.setBookings(List.of(
                 mail("m1", "alice", "booking", "11"),
-                mail("m2", "bob", "booking", "20")
-        ));
+                mail("m2", "bob", "booking", "20")));
 
         MailIngestionService.IngestResult result = service.ingestYear();
 
@@ -73,17 +73,17 @@ class MailIngestionServiceTest {
     }
 
     private ParsedMail mail(String id, String student, String kind, String amount) {
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Seoul"));
         return new ParsedMail(
                 id,
                 student,
                 student,
                 new Money(new BigDecimal(amount), "USD"),
-                ZonedDateTime.of(LocalDate.now(ZoneId.of("Asia/Seoul")), java.time.LocalTime.NOON, ZoneId.of("Asia/Seoul")),
+                ZonedDateTime.of(today, java.time.LocalTime.NOON, ZoneId.of("Asia/Seoul")),
                 "subject",
                 "snippet",
                 kind,
-                null
-        );
+                today); // lesson_date는 NOT NULL
     }
 
     private static AppProps testProps() {
@@ -92,13 +92,13 @@ class MailIngestionServiceTest {
                 new AppProps.Gcal("", "", "", "", 0),
                 new AppProps.Supabase("", "", "preply_mail", true),
                 new AppProps.Run(""),
-                false
-        );
+                false);
     }
 
     private static DataSource h2DataSource() {
         JdbcDataSource ds = new JdbcDataSource();
-        ds.setURL("jdbc:h2:mem:preply;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1");
+        ds.setURL(
+                "jdbc:h2:mem:preply;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1");
         ds.setUser("sa");
         ds.setPassword("");
         return ds;
@@ -128,5 +128,3 @@ class MailIngestionServiceTest {
         }
     }
 }
-
-

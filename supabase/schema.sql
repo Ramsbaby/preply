@@ -1,14 +1,15 @@
 create table if not exists preply_mail (
-  message_id text primary key,
-  student_full_name text,
+  message_id text,
+  student_full_name text not null,
   student_normalized text,
-  amount numeric,
+  amount numeric not null,
   currency text,
-  received_at timestamptz,
+  received_at timestamptz not null,
   subject text,
   snippet text,
   kind text check (kind in ('booking','cancellation_compensation')),
-  lesson_date date
+  lesson_date date not null,
+  primary key (student_full_name, lesson_date)
 );
 
 create index if not exists idx_preply_mail_student_norm on preply_mail(student_normalized);

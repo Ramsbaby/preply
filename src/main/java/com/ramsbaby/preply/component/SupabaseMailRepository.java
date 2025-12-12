@@ -10,15 +10,15 @@ import java.util.Map;
 
 import javax.sql.DataSource;
 
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.stereotype.Service;
+
 import com.ramsbaby.preply.config.AppProps;
 import com.ramsbaby.preply.dto.Money;
 import com.ramsbaby.preply.dto.ParsedMail;
 import com.ramsbaby.preply.dto.RateEntry;
 import com.ramsbaby.preply.port.MailCachePort;
-
-import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
-import org.springframework.stereotype.Service;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -121,6 +121,26 @@ public class SupabaseMailRepository implements MailCachePort {
         return List.of();
     }
 
+    /**
+     * 지정된 날짜 이전의 레슨 데이터를 삭제한다.
+     * 
+     * @param cutoffDate 이 날짜 이전 데이터 삭제
+     * @return 삭제된 레코드 수
+     */
+    public int deleteOlderThan(LocalDate cutoffDate) {
+        if (!enabled())
+            return 0;
+        try {
+            String sql = "delete from %s where lesson_date < :cutoff".formatted(props.supabase().table());
+            int deleted = jdbc.update(sql, Map.of("cutoff", cutoffDate));
+            log.info("{}일 이전 데이터 {}건 삭제", cutoffDate, deleted);
+            return deleted;
+        } catch (Exception e) {
+            log.warn("데이터 삭제 실패: {}", e.toString());
+            return 0;
+        }
+    }
+
     private MapSqlParameterSource toParams(ParsedMail m) {
         MapSqlParameterSource p = new MapSqlParameterSource();
         p.addValue("message_id", m.messageId());
@@ -142,7 +162,7 @@ public class SupabaseMailRepository implements MailCachePort {
             // H2(PostgreSQL 모드)에서 ON CONFLICT 동작 제약을 피하기 위해 MERGE 사용
             return """
                     merge into %s (message_id, student_full_name, student_normalized, amount, currency, received_at, subject, snippet, kind, lesson_date)
-                    key(message_id)
+                    key(student_full_name, lesson_date)
                     values (:message_id, :student_full_name, :student_normalized, :amount, :currency, :received_at, :subject, :snippet, :kind, :lesson_date)
                     """
                     .formatted(table);
@@ -150,16 +170,15 @@ public class SupabaseMailRepository implements MailCachePort {
         return """
                 insert into %s (message_id, student_full_name, student_normalized, amount, currency, received_at, subject, snippet, kind, lesson_date)
                 values (:message_id, :student_full_name, :student_normalized, :amount, :currency, :received_at, :subject, :snippet, :kind, :lesson_date)
-                on conflict (message_id) do update set
-                  student_full_name = excluded.student_full_name,
+                on conflict (student_full_name, lesson_date) do update set
+                  message_id = excluded.message_id,
                   student_normalized = excluded.student_normalized,
                   amount = excluded.amount,
                   currency = excluded.currency,
                   received_at = excluded.received_at,
                   subject = excluded.subject,
                   snippet = excluded.snippet,
-                  kind = excluded.kind,
-                  lesson_date = excluded.lesson_date
+                  kind = excluded.kind
                 """
                 .formatted(table);
     }

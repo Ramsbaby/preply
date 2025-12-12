@@ -8,14 +8,12 @@ import org.mockito.Mockito;
 class ScheduledIngestionJobTest {
 
     @Test
-    void ingestWeekly_calls_ingest_180_days() {
+    void ingestDaily_calls_ingest_7_days() {
         MailIngestionService svc = Mockito.mock(MailIngestionService.class);
         ScheduledIngestionJob job = new ScheduledIngestionJob(svc);
 
-        job.ingestWeekly();
+        job.ingestDaily();
 
-        verify(svc).ingest(180);
+        verify(svc).ingest(7);
     }
 }
-
-

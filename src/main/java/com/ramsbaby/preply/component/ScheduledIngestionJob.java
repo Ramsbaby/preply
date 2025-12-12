@@ -13,17 +13,17 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class ScheduledIngestionJob {
 
-    private static final int LOOKBACK_DAYS = 180;
+    private static final int LOOKBACK_DAYS = 7; // 매일 최근 7일치만 파싱
 
     private final MailIngestionService mailIngestionService;
 
-    // 주 1회 월요일 15시 KST, Supabase에 6개월치 캐시 upsert
-    @Scheduled(cron = "0 0 15 ? * MON", zone = "Asia/Seoul")
-    public void ingestWeekly() {
+    // 매일 9시 KST, 최근 7일치 메일 파싱하여 Supabase에 upsert
+    @Scheduled(cron = "0 0 9 * * *", zone = "Asia/Seoul")
+    public void ingestDaily() {
         try {
             mailIngestionService.ingest(LOOKBACK_DAYS);
         } catch (Exception e) {
-            log.warn("주간 ingest 실패: {}", e.toString());
+            log.warn("일간 ingest 실패: {}", e.toString());
         }
     }
 }
