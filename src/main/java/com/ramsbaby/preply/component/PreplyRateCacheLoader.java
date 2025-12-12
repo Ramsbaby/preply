@@ -165,6 +165,7 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
                     new jakarta.mail.search.SubjectTerm("scheduled a new lesson"));
 
             Message[] found = inbox.search(term);
+            log.info("Gmail 검색(booking) 결과: {}건", found.length);
 
             FetchProfile fp = new FetchProfile();
             fp.add(FetchProfile.Item.ENVELOPE);
@@ -467,6 +468,9 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
             // 5) 레슨 날짜 파싱
             LocalDate lessonDate = extractLessonDateFromBooking(cleaned, receivedAt.toLocalDate());
             if (lessonDate == null) {
+                log.warn("날짜 파싱 실패 (subject: {}): {}",
+                        Optional.ofNullable(msg.getSubject()).orElse("?"),
+                        snippet(cleaned));
                 return Optional.empty();
             }
 
@@ -486,7 +490,7 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
                     lessonDate));
 
         } catch (Exception e) {
-            // log.warn("extractRate error: {}", e.toString());
+            log.warn("extractRate error: {}", e.toString());
             return Optional.empty();
         }
     }

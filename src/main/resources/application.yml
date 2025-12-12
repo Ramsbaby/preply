@@ -19,9 +19,9 @@ app:
     preplySuffix: ${APP_GCAL_PREPLY_SUFFIX:" - Preply lesson"}
     lookBackDays: ${APP_GCAL_LOOKBACK_DAYS:90}
   supabase:
-    enabled: ${APP_SUPABASE_ENABLED:false}
+    enabled: ${APP_SUPABASE_ENABLED:true}
     # Supabase(PostgreSQL) 테이블명. enabled=true일 때만 사용됩니다.
-    table: ${APP_SUPABASE_TABLE:}
+    table: ${APP_SUPABASE_TABLE:preply_mail}
   run:
     token: ${APP_RUN_TOKEN:}
   scheduler:
