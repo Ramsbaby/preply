@@ -186,8 +186,21 @@ public class SupabaseMailRepository implements MailCachePort {
     private static boolean detectH2(DataSource ds) {
         try (var conn = ds.getConnection()) {
             String name = conn.getMetaData().getDatabaseProductName();
+            String url = conn.getMetaData().getURL();
+            log.info("DB 감지: productName={}, url={}", name, url);
+
+            // PostgreSQL이면 H2가 아님 (Supabase 포함)
+            if (name != null && name.toLowerCase(Locale.ROOT).contains("postgresql")) {
+                return false;
+            }
+            // URL에 supabase가 포함되어 있으면 PostgreSQL
+            if (url != null && url.toLowerCase(Locale.ROOT).contains("supabase")) {
+                return false;
+            }
+            // H2인 경우
             return name != null && name.toLowerCase(Locale.ROOT).contains("h2");
         } catch (Exception e) {
+            log.warn("DB 감지 실패: {}", e.toString());
             return false;
         }
     }

@@ -34,4 +34,26 @@ public class RunController {
         return ResponseEntity.ok("Ingested: " + result.bookingCount() + " bookings, "
                 + result.compensationCount() + " compensations");
     }
+
+    /**
+     * 매일 아침 7일치 ingest (GCP Cloud Scheduler 호출용).
+     * 매일 09:00 KST에 호출하도록 Cloud Scheduler 설정.
+     */
+    @GetMapping("/ingest/daily")
+    public ResponseEntity<String> ingestDaily() {
+        var result = ingestionService.ingest(7);
+        return ResponseEntity.ok("Daily ingest: " + result.bookingCount() + " bookings, "
+                + result.compensationCount() + " compensations");
+    }
+
+    /**
+     * 주 1회 6개월치 ingest (GCP Cloud Scheduler 호출용).
+     * 매주 월요일 15:00 KST에 호출하도록 Cloud Scheduler 설정.
+     */
+    @GetMapping("/ingest/weekly")
+    public ResponseEntity<String> ingestWeekly() {
+        var result = ingestionService.ingest(180);
+        return ResponseEntity.ok("Weekly ingest: " + result.bookingCount() + " bookings, "
+                + result.compensationCount() + " compensations");
+    }
 }

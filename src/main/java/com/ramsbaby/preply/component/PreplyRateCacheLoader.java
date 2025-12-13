@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Arrays;
 // import java.util.ArrayList;
 import java.util.Date;
@@ -27,17 +28,20 @@ import com.ramsbaby.preply.port.RateLoaderPort;
 
 import jakarta.mail.FetchProfile;
 import jakarta.mail.Folder;
+import jakarta.mail.FolderClosedException;
 import jakarta.mail.Message;
 import jakarta.mail.MessagingException;
 import jakarta.mail.Multipart;
 import jakarta.mail.Part;
 import jakarta.mail.Session;
 import jakarta.mail.Store;
-// import jakarta.mail.search.AndTerm;
-// import jakarta.mail.search.ComparisonTerm;
+import jakarta.mail.StoreClosedException;
+import jakarta.mail.search.AndTerm;
+import jakarta.mail.search.ComparisonTerm;
 import jakarta.mail.search.OrTerm;
-// import jakarta.mail.search.ReceivedDateTerm;
+import jakarta.mail.search.ReceivedDateTerm;
 import jakarta.mail.search.SearchTerm;
+import jakarta.mail.search.SubjectTerm;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -103,6 +107,8 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
     // --------- Patterns & Functional Predicates (reuse across parsers) ---------
     private static final Pattern P_LESSON_DATE = Pattern.compile("레슨\\s*[:：]\\s*(\\d{1,2})월\\s*(\\d{1,2})일");
     private static final Pattern P_LESSON_START_KO = Pattern.compile("레슨\\s*시작\\s*[:：]\\s*(\\d{1,2})월\\s*(\\d{1,2})일");
+    // "일정: 7월 25일 금요일" 형식도 지원
+    private static final Pattern P_LESSON_DATE_ALT = Pattern.compile("일정\\s*[:：]\\s*(\\d{1,2})월\\s*(\\d{1,2})일");
     private static final Pattern P_LESSON_START_EN = Pattern.compile(
             "Lesson\\s*time\\s*[:：].*?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\s+(\\d{1,2})",
             Pattern.CASE_INSENSITIVE);
@@ -143,6 +149,33 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
      * 예약 메일을 lookBackDays 범위에서 파싱하여 반환한다.
      */
     public List<ParsedMail> fetchBookings(int lookBackDays) {
+        List<ParsedMail> all = new ArrayList<>();
+        LocalDate today = LocalDate.now(KST);
+        LocalDate start = today.minusDays(lookBackDays);
+        LocalDate end = today.plusDays(1);
+
+        LocalDate current = start;
+        // end 날짜까지 7일 단위 반복
+        while (current.isBefore(end)) {
+            LocalDate next = current.plusDays(7);
+            if (next.isAfter(end)) {
+                next = end;
+            }
+
+            log.info("Booking fetch chunk: {} ~ {}", current, next);
+            try {
+                all.addAll(fetchBookingsChunk(current, next));
+            } catch (Exception e) {
+                // 한 덩어리 실패 시 전체 중단 (데이터 정합성 위해)
+                throw new RuntimeException("Chunk fetch failed for " + current + "~" + next, e);
+            }
+            current = next;
+        }
+
+        return all;
+    }
+
+    private List<ParsedMail> fetchBookingsChunk(LocalDate start, LocalDate end) {
         Properties p = new Properties();
         p.put("mail.store.protocol", "imaps");
         p.put("mail.imaps.host", props.mail().imap().host());
@@ -156,16 +189,20 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
             Folder inbox = store.getFolder("INBOX");
             inbox.open(Folder.READ_ONLY);
 
-            LocalDate today = LocalDate.now(KST);
-            Date start = Date.from(today.minusDays(lookBackDays).atStartOfDay(KST).toInstant());
-            Date end = Date.from(today.plusDays(1).atStartOfDay(KST).toInstant());
+            Date dateStart = Date.from(start.atStartOfDay(KST).toInstant());
+            Date dateEnd = Date.from(end.atStartOfDay(KST).toInstant());
 
-            SearchTerm term = new OrTerm(
-                    new jakarta.mail.search.SubjectTerm("예약했어요"),
-                    new jakarta.mail.search.SubjectTerm("scheduled a new lesson"));
+            // Subject Term + Date Range Term
+            SearchTerm subjectTerm = new OrTerm(
+                    new SubjectTerm("예약했어요"),
+                    new SubjectTerm("scheduled a new lesson"));
+            SearchTerm dateTerm = new AndTerm(
+                    new ReceivedDateTerm(ComparisonTerm.GE, dateStart),
+                    new ReceivedDateTerm(ComparisonTerm.LT, dateEnd));
+            SearchTerm term = new AndTerm(subjectTerm, dateTerm);
 
             Message[] found = inbox.search(term);
-            log.info("Gmail 검색(booking) 결과: {}건", found.length);
+            log.info("Gmail 검색(booking) 결과 [{} ~ {}]: {}건", start, end, found.length);
 
             FetchProfile fp = new FetchProfile();
             fp.add(FetchProfile.Item.ENVELOPE);
@@ -173,7 +210,8 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
             inbox.fetch(found, fp);
 
             List<ParsedMail> results = Arrays.stream(found)
-                    .filter(m -> isInRange(m, start, end))
+                    // isInRange는 이미 SearchQuery로 필터링했으므로 제거 가능하지만, 더 안전하게 유지해도 됨
+                    // 여기서는 SearchTerm을 믿고 바로 매핑
                     .map(this::parseBooking)
                     .flatMap(Optional::stream)
                     .toList();
@@ -289,16 +327,24 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
 
     /**
      * Booking 메일에서 레슨 시작 날짜를 파싱한다.
-     * 한글: "레슨 시작: MM월 DD일"
+     * 한글: "레슨 시작: MM월 DD일" 또는 "일정: MM월 DD일"
      * 영문: "Lesson time: ... MMM DD"
      * 연도는 receivedDate 기준으로 추론 (과거 날짜면 다음 년도로 간주)
      */
     private LocalDate extractLessonDateFromBooking(String cleaned, LocalDate receivedDate) {
-        // 한글 패턴 시도
+        // 한글 패턴 1: "레슨 시작: MM월 DD일"
         Matcher mkO = P_LESSON_START_KO.matcher(cleaned);
         if (mkO.find()) {
             int mm = Integer.parseInt(mkO.group(1));
             int dd = Integer.parseInt(mkO.group(2));
+            return inferLessonYear(receivedDate, mm, dd);
+        }
+
+        // 한글 패턴 2: "일정: MM월 DD일" (새 형식)
+        Matcher mkAlt = P_LESSON_DATE_ALT.matcher(cleaned);
+        if (mkAlt.find()) {
+            int mm = Integer.parseInt(mkAlt.group(1));
+            int dd = Integer.parseInt(mkAlt.group(2));
             return inferLessonYear(receivedDate, mm, dd);
         }
 
@@ -489,6 +535,9 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
                     "booking",
                     lessonDate));
 
+        } catch (FolderClosedException | StoreClosedException e) {
+            log.error("IMAP 연결 끊김 감지: batch 중단");
+            throw new RuntimeException("Connection closed", e);
         } catch (Exception e) {
             log.warn("extractRate error: {}", e.toString());
             return Optional.empty();
