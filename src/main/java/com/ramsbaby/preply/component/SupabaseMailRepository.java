@@ -28,12 +28,10 @@ public class SupabaseMailRepository implements MailCachePort {
 
     private final AppProps props;
     private final NamedParameterJdbcTemplate jdbc;
-    private final boolean isH2;
 
     public SupabaseMailRepository(AppProps props, DataSource dataSource) {
         this.props = props;
         this.jdbc = new NamedParameterJdbcTemplate(dataSource);
-        this.isH2 = detectH2(dataSource);
     }
 
     public boolean enabled() {
@@ -43,9 +41,9 @@ public class SupabaseMailRepository implements MailCachePort {
                 && !props.supabase().table().isBlank();
     }
 
-    public void upsert(List<ParsedMail> mails) {
+    public int upsert(List<ParsedMail> mails) {
         if (!enabled() || mails == null || mails.isEmpty())
-            return;
+            return 0;
         try {
             String sql = buildUpsertSql();
 
@@ -53,9 +51,11 @@ public class SupabaseMailRepository implements MailCachePort {
                     .map(this::toParams)
                     .toList();
 
-            jdbc.batchUpdate(sql, batch.toArray(MapSqlParameterSource[]::new));
+            int[] affected = jdbc.batchUpdate(sql, batch.toArray(MapSqlParameterSource[]::new));
+            return java.util.Arrays.stream(affected).sum();
         } catch (Exception e) {
-            log.warn("Supabase upsert 실패: {}", e.toString());
+            log.warn("Supabase upsert 실패", e);
+            return 0;
         }
     }
 
@@ -158,15 +158,7 @@ public class SupabaseMailRepository implements MailCachePort {
 
     private String buildUpsertSql() {
         String table = props.supabase().table();
-        if (isH2) {
-            // H2(PostgreSQL 모드)에서 ON CONFLICT 동작 제약을 피하기 위해 MERGE 사용
-            return """
-                    merge into %s (message_id, student_full_name, student_normalized, amount, currency, received_at, subject, snippet, kind, lesson_date)
-                    key(student_full_name, lesson_date)
-                    values (:message_id, :student_full_name, :student_normalized, :amount, :currency, :received_at, :subject, :snippet, :kind, :lesson_date)
-                    """
-                    .formatted(table);
-        }
+        // H2 2.x (in PostgreSQL mode) and Real PostgreSQL both support ON CONFLICT
         return """
                 insert into %s (message_id, student_full_name, student_normalized, amount, currency, received_at, subject, snippet, kind, lesson_date)
                 values (:message_id, :student_full_name, :student_normalized, :amount, :currency, :received_at, :subject, :snippet, :kind, :lesson_date)
@@ -183,25 +175,4 @@ public class SupabaseMailRepository implements MailCachePort {
                 .formatted(table);
     }
 
-    private static boolean detectH2(DataSource ds) {
-        try (var conn = ds.getConnection()) {
-            String name = conn.getMetaData().getDatabaseProductName();
-            String url = conn.getMetaData().getURL();
-            log.info("DB 감지: productName={}, url={}", name, url);
-
-            // PostgreSQL이면 H2가 아님 (Supabase 포함)
-            if (name != null && name.toLowerCase(Locale.ROOT).contains("postgresql")) {
-                return false;
-            }
-            // URL에 supabase가 포함되어 있으면 PostgreSQL
-            if (url != null && url.toLowerCase(Locale.ROOT).contains("supabase")) {
-                return false;
-            }
-            // H2인 경우
-            return name != null && name.toLowerCase(Locale.ROOT).contains("h2");
-        } catch (Exception e) {
-            log.warn("DB 감지 실패: {}", e.toString());
-            return false;
-        }
-    }
 }

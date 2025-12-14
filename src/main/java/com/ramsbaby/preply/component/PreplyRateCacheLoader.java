@@ -21,6 +21,7 @@ import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 
 import com.ramsbaby.preply.config.AppProps;
+import com.ramsbaby.preply.dto.FetchResult;
 import com.ramsbaby.preply.dto.Money;
 import com.ramsbaby.preply.dto.ParsedMail;
 import com.ramsbaby.preply.dto.RateEntry;
@@ -125,7 +126,8 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
 
     public Map<String, Money> loadRates() {
         Map<String, Money> rateByStudent = new HashMap<>();
-        fetchBookings(props.gcal().lookBackDays()).forEach(pm -> rateByStudent.put(pm.studentNormalized(), pm.money()));
+        fetchBookings(props.gcal().lookBackDays()).mails()
+                .forEach(pm -> rateByStudent.put(pm.studentNormalized(), pm.money()));
         return rateByStudent;
     }
 
@@ -139,7 +141,7 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
      */
     public List<RateEntry> loadTodayCancellationCompensations() {
         LocalDate today = LocalDate.now(KST);
-        return fetchCancellationCompensations(props.gcal().lookBackDays(), today).stream()
+        return fetchCancellationCompensations(props.gcal().lookBackDays(), today).mails().stream()
                 .filter(pm -> pm.lessonDate() != null && pm.lessonDate().equals(today))
                 .map(pm -> new RateEntry(pm.studentNormalized(), pm.money(), pm.receivedAt()))
                 .toList();
@@ -148,8 +150,9 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
     /**
      * 예약 메일을 lookBackDays 범위에서 파싱하여 반환한다.
      */
-    public List<ParsedMail> fetchBookings(int lookBackDays) {
+    public FetchResult fetchBookings(int lookBackDays) {
         List<ParsedMail> all = new ArrayList<>();
+        int totalScanned = 0;
         LocalDate today = LocalDate.now(KST);
         LocalDate start = today.minusDays(lookBackDays);
         LocalDate end = today.plusDays(1);
@@ -162,9 +165,11 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
                 next = end;
             }
 
-            log.info("Booking fetch chunk: {} ~ {}", current, next);
+            // log.info("Booking fetch chunk: {} ~ {}", current, next);
             try {
-                all.addAll(fetchBookingsChunk(current, next));
+                FetchResult chunk = fetchBookingsChunk(current, next);
+                all.addAll(chunk.mails());
+                totalScanned += chunk.totalScannedCount();
             } catch (Exception e) {
                 // 한 덩어리 실패 시 전체 중단 (데이터 정합성 위해)
                 throw new RuntimeException("Chunk fetch failed for " + current + "~" + next, e);
@@ -172,10 +177,10 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
             current = next;
         }
 
-        return all;
+        return new FetchResult(all, totalScanned);
     }
 
-    private List<ParsedMail> fetchBookingsChunk(LocalDate start, LocalDate end) {
+    private FetchResult fetchBookingsChunk(LocalDate start, LocalDate end) {
         Properties p = new Properties();
         p.put("mail.store.protocol", "imaps");
         p.put("mail.imaps.host", props.mail().imap().host());
@@ -216,7 +221,7 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
                     .flatMap(Optional::stream)
                     .toList();
             inbox.close(false);
-            return results;
+            return new FetchResult(results, found.length);
         } catch (MessagingException e) {
             throw new IllegalStateException("IMAP 읽기 실패", e);
         }
@@ -225,7 +230,7 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
     /**
      * 취소 보상 메일을 lookBackDays 범위에서 파싱하여 반환한다.
      */
-    public List<ParsedMail> fetchCancellationCompensations(int lookBackDays, LocalDate today) {
+    public FetchResult fetchCancellationCompensations(int lookBackDays, LocalDate today) {
         Properties p = new Properties();
         p.put("mail.store.protocol", "imaps");
         p.put("mail.imaps.host", props.mail().imap().host());
@@ -255,7 +260,7 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
                     .toList();
 
             inbox.close(false);
-            return results;
+            return new FetchResult(results, found.length);
         } catch (MessagingException e) {
             throw new IllegalStateException("IMAP 읽기 실패(취소 보상)", e);
         }

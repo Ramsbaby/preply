@@ -21,6 +21,7 @@ import com.ramsbaby.preply.component.MailIngestionService;
 import com.ramsbaby.preply.component.PreplyRateCacheLoader;
 import com.ramsbaby.preply.component.SupabaseMailRepository;
 import com.ramsbaby.preply.config.AppProps;
+import com.ramsbaby.preply.dto.FetchResult;
 import com.ramsbaby.preply.dto.Money;
 import com.ramsbaby.preply.dto.ParsedMail;
 
@@ -180,13 +181,13 @@ class EndToEndScenarioTest {
         }
 
         @Override
-        public List<ParsedMail> fetchBookings(int lookBackDays) {
-            return bookings;
+        public FetchResult fetchBookings(int lookBackDays) {
+            return new FetchResult(bookings, bookings.size());
         }
 
         @Override
-        public List<ParsedMail> fetchCancellationCompensations(int lookBackDays, LocalDate asOf) {
-            return List.of();
+        public FetchResult fetchCancellationCompensations(int lookBackDays, LocalDate asOf) {
+            return new FetchResult(List.of(), 0);
         }
     }
 }

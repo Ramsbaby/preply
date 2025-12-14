@@ -31,8 +31,7 @@ public class RunController {
     @GetMapping("/ingest")
     public ResponseEntity<String> ingest(@RequestParam(defaultValue = "180") int days) {
         var result = ingestionService.ingest(days);
-        return ResponseEntity.ok("Ingested: " + result.bookingCount() + " bookings, "
-                + result.compensationCount() + " compensations");
+        return ResponseEntity.ok(formatResult("Manual ingest(" + days + " days)", result));
     }
 
     /**
@@ -42,8 +41,7 @@ public class RunController {
     @GetMapping("/ingest/daily")
     public ResponseEntity<String> ingestDaily() {
         var result = ingestionService.ingest(7);
-        return ResponseEntity.ok("Daily ingest: " + result.bookingCount() + " bookings, "
-                + result.compensationCount() + " compensations");
+        return ResponseEntity.ok(formatResult("Daily ingest", result));
     }
 
     /**
@@ -53,7 +51,11 @@ public class RunController {
     @GetMapping("/ingest/weekly")
     public ResponseEntity<String> ingestWeekly() {
         var result = ingestionService.ingest(180);
-        return ResponseEntity.ok("Weekly ingest: " + result.bookingCount() + " bookings, "
-                + result.compensationCount() + " compensations");
+        return ResponseEntity.ok(formatResult("Weekly ingest", result));
+    }
+
+    private String formatResult(String title, com.ramsbaby.preply.component.MailIngestionService.IngestResult r) {
+        return String.format("[%s] Total scanned: %d, Saved: %d (Bookings: %d, Compensations: %d)",
+                title, r.totalReadCount(), r.savedCount(), r.bookingCount(), r.compensationCount());
     }
 }

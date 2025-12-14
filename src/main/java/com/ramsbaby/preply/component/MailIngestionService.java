@@ -5,11 +5,12 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.springframework.stereotype.Service;
+
+import com.ramsbaby.preply.dto.FetchResult;
 import com.ramsbaby.preply.dto.ParsedMail;
 import com.ramsbaby.preply.port.MailCachePort;
 import com.ramsbaby.preply.port.RateLoaderPort;
-
-import org.springframework.stereotype.Service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,20 +33,25 @@ public class MailIngestionService {
     public IngestResult ingest(int lookBackDays) {
         if (!supabase.enabled()) {
             log.info("Supabase 미설정: ingest 스킵");
-            return new IngestResult(0, 0, false);
+            return new IngestResult(0, 0, 0, 0, false);
         }
 
-        List<ParsedMail> bookings = loader.fetchBookings(lookBackDays);
-        List<ParsedMail> comps = loader.fetchCancellationCompensations(lookBackDays, LocalDate.now(KST));
+        FetchResult bookings = loader.fetchBookings(lookBackDays);
+        FetchResult comps = loader.fetchCancellationCompensations(lookBackDays, LocalDate.now(KST));
 
-        List<ParsedMail> all = new ArrayList<>(bookings.size() + comps.size());
-        all.addAll(bookings);
-        all.addAll(comps);
+        List<ParsedMail> all = new ArrayList<>(bookings.mails().size() + comps.mails().size());
+        all.addAll(bookings.mails());
+        all.addAll(comps.mails());
 
-        supabase.upsert(all);
-        return new IngestResult(bookings.size(), comps.size(), true);
+        int saved = supabase.upsert(all);
+        int totalRead = bookings.totalScannedCount() + comps.totalScannedCount();
+
+        log.info("Ingest 완료 (lookBack={}days): scan={}, saved={}", lookBackDays, totalRead, saved);
+
+        return new IngestResult(bookings.mails().size(), comps.mails().size(), totalRead, saved, true);
     }
 
-    public record IngestResult(int bookingCount, int compensationCount, boolean persisted) {
+    public record IngestResult(int bookingCount, int compensationCount, int totalReadCount, int savedCount,
+            boolean persisted) {
     }
 }

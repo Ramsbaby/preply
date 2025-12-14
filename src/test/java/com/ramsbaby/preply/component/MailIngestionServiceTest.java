@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import com.ramsbaby.preply.config.AppProps;
+import com.ramsbaby.preply.dto.FetchResult;
 import com.ramsbaby.preply.dto.Money;
 import com.ramsbaby.preply.dto.ParsedMail;
 
@@ -118,13 +119,13 @@ class MailIngestionServiceTest {
         }
 
         @Override
-        public List<ParsedMail> fetchBookings(int lookBackDays) {
-            return bookings;
+        public FetchResult fetchBookings(int lookBackDays) {
+            return new FetchResult(bookings, bookings.size());
         }
 
         @Override
-        public List<ParsedMail> fetchCancellationCompensations(int lookBackDays, LocalDate asOf) {
-            return comps;
+        public FetchResult fetchCancellationCompensations(int lookBackDays, LocalDate asOf) {
+            return new FetchResult(comps, comps.size());
         }
     }
 }

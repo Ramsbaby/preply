@@ -11,10 +11,9 @@ import com.ramsbaby.preply.dto.RateEntry;
 public interface MailCachePort {
     boolean enabled();
 
-    void upsert(List<ParsedMail> mails);
+    int upsert(List<ParsedMail> mails);
 
     Map<String, Money> findLatestBookingRates();
 
     List<RateEntry> findTodayCompensations(ZoneId tz);
 }
-
