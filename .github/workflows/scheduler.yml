@@ -1,0 +1,109 @@
+name: Preply Daily Scheduler
+
+on:
+  schedule:
+    # 매일 09:00 KST (00:00 UTC) - Daily Ingest
+    - cron: '0 0 * * *'
+    # 매일 23:05 KST (14:05 UTC) - Daily Summary
+    - cron: '5 14 * * *'
+    # 매주 월요일 15:00 KST (06:00 UTC) - Weekly Ingest
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to run'
+        required: true
+        default: 'daily-summary'
+        type: choice
+        options:
+          - daily-ingest
+          - daily-summary
+          - weekly-ingest
+          - test
+
+jobs:
+  call-preply-api:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine endpoint
+        id: endpoint
+        run: |
+          # 스케줄 또는 수동 입력에 따라 엔드포인트 결정
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            ACTION="${{ github.event.inputs.action }}"
+          else
+            # cron 시간에 따라 결정
+            HOUR=$(date -u +%H)
+            MINUTE=$(date -u +%M)
+            DOW=$(date -u +%u)  # 1=Monday
+
+            if [ "$HOUR" == "00" ]; then
+              ACTION="daily-ingest"
+            elif [ "$HOUR" == "14" ]; then
+              ACTION="daily-summary"
+            elif [ "$HOUR" == "06" ] && [ "$DOW" == "1" ]; then
+              ACTION="weekly-ingest"
+            else
+              ACTION="daily-summary"
+            fi
+          fi
+
+          case $ACTION in
+            daily-ingest)
+              ENDPOINT="/run/ingest/daily"
+              ;;
+            weekly-ingest)
+              ENDPOINT="/run/ingest/weekly"
+              ;;
+            daily-summary)
+              ENDPOINT="/run"
+              ;;
+            test)
+              ENDPOINT="/actuator/health"
+              ;;
+          esac
+
+          echo "action=$ACTION" >> $GITHUB_OUTPUT
+          echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
+
+      - name: Get GCP Identity Token
+        id: auth
+        run: |
+          # GCP 서비스 계정으로 Identity Token 발급
+          echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa.json
+
+          # gcloud 설치
+          curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts > /dev/null 2>&1
+          source ~/google-cloud-sdk/path.bash.inc
+
+          # 서비스 계정 인증
+          gcloud auth activate-service-account --key-file=/tmp/sa.json
+
+          # Identity Token 발급 (Cloud Run 호출용)
+          TOKEN=$(gcloud auth print-identity-token --audiences="${{ secrets.CLOUD_RUN_URL }}")
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+
+          # 정리
+          rm /tmp/sa.json
+
+      - name: Call Preply API
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            "${{ secrets.CLOUD_RUN_URL }}${{ steps.endpoint.outputs.endpoint }}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "=== Response ==="
+          echo "Action: ${{ steps.endpoint.outputs.action }}"
+          echo "Endpoint: ${{ steps.endpoint.outputs.endpoint }}"
+          echo "HTTP Code: $HTTP_CODE"
+          echo "Body: $BODY"
+
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "✅ Success!"
+          else
+            echo "❌ Failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
