@@ -1,97 +1,64 @@
 package com.ramsbaby.preply.component;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Component;
 
 import com.ramsbaby.preply.config.AppProps;
-import com.ramsbaby.preply.dto.LessonEvent;
 import com.ramsbaby.preply.dto.Money;
-import com.ramsbaby.preply.dto.RateEntry;
 import com.ramsbaby.preply.port.ExchangeRatePort;
-import com.ramsbaby.preply.port.LessonEventsPort;
-import com.ramsbaby.preply.port.MailCachePort;
-import com.ramsbaby.preply.port.RateLoaderPort;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @Component
 @RequiredArgsConstructor
+@Slf4j
 public class DailySummaryJob {
 
     private final AppProps props;
-    private final RateLoaderPort rateLoader;
-    private final MailCachePort supabase;
-    private final LessonEventsPort gcal;
+    private final SummaryService summaryService;
     private final JavaMailSender mailSender;
     private final ExchangeRatePort fx;
 
-    private static record Row(String student, Money money) {
-    }
-
-    private static record MatchResult(List<Row> rows, List<String> unknown) {
-    }
+    public record Row(String student, Money money) {}
 
     private static String fmtAmount(BigDecimal v, String currency) {
-        if (v == null)
-            return "-";
-        java.math.BigDecimal n = (v.compareTo(BigDecimal.ZERO) == 0)
+        if (v == null) return "-";
+        BigDecimal n = (v.compareTo(BigDecimal.ZERO) == 0)
                 ? BigDecimal.ZERO
                 : v.stripTrailingZeros();
-
-        // 통화별 최대 소수 자리 (KRW 0자리, 그 외 최대 2자리)
         int maxScale = "KRW".equalsIgnoreCase(currency) ? 0 : 2;
         int scale = Math.min(Math.max(n.scale(), 0), maxScale);
-        n = n.setScale(scale, java.math.RoundingMode.HALF_UP);
-
+        n = n.setScale(scale, RoundingMode.HALF_UP);
         return n.toPlainString() + " " + currency;
     }
 
-    // 필요시 스케줄링 켜기: @EnableScheduling 추가
-    // @Scheduled(cron = "0 5 23 * * *", zone = "Asia/Seoul")
     public void run() {
         generateAndSend();
     }
 
-    // 수동 호출도 가능하게 분리
     public void generateAndSend() {
-        Map<String, Money> rateByStudent;
-        List<RateEntry> compensations;
-
-        if (supabase.enabled()) {
-            // Supabase에 캐시된 데이터만 사용 (ingest는 별도 스케줄로 수행)
-            rateByStudent = supabase.findLatestBookingRates();
-            compensations = supabase.findTodayCompensations(ZoneId.of(props.gcal().timeZone()));
-        } else {
-            rateByStudent = rateLoader.loadRates();
-            compensations = rateLoader.loadTodayCancellationCompensations();
-        }
-
-        List<LessonEvent> events = gcal.loadTodayPreplyEvents();
-
-        MatchResult match = matchEventsWithRates(events, rateByStudent);
-        List<Row> rows = new ArrayList<>(match.rows());
-        addCompensations(rows, compensations);
-
-        Map<String, BigDecimal> totals = computeTotalsByCurrency(rows);
+        var summary = summaryService.buildTodaySummary();
+        List<Row> rows = summaryService.toRows(summary);
+        Map<String, BigDecimal> totals = summary.totalsByCurrency();
         var tz = ZoneId.of(props.gcal().timeZone());
-        Set<String> currencies = collectCurrencies(totals);
-        Map<String, FxRateService.Snapshot> rateSnapshots = new java.util.HashMap<>();
-        Map<String, String> rateErrors = new java.util.HashMap<>();
+
+        Set<String> currencies = summaryService.collectCurrencies(totals);
+        Map<String, FxRateService.Snapshot> rateSnapshots = new HashMap<>();
+        Map<String, String> rateErrors = new HashMap<>();
         currencies.forEach(cur -> {
-            if ("KRW".equalsIgnoreCase(cur)) {
-                return;
-            }
+            if ("KRW".equalsIgnoreCase(cur)) return;
             try {
                 rateSnapshots.put(cur, fx.snapshot(cur));
             } catch (Exception e) {
@@ -100,49 +67,11 @@ public class DailySummaryJob {
         });
         BigDecimal krwTotal = computeKrwTotal(totals, rateSnapshots, rateErrors);
 
-        String body = buildEmailBody(totals, krwTotal, currencies, rows, match.unknown(), tz, rateSnapshots,
-                rateErrors);
+        String body = buildEmailBody(totals, krwTotal, currencies, rows,
+                summary.unmatched(), tz, rateSnapshots, rateErrors);
         String subject = "[Preply] 오늘 레슨 요약 (" + LocalDate.now(tz) + ")";
         String[] recipients = resolveRecipients();
         sendEmail(subject, body, recipients);
-    }
-
-    private MatchResult matchEventsWithRates(List<LessonEvent> events, Map<String, Money> rateByStudent) {
-        List<Row> rows = new ArrayList<>();
-        List<String> unknown = new ArrayList<>();
-        for (LessonEvent e : events) {
-            Money rate = rateByStudent.get(e.studentName());
-            if (rate == null)
-                unknown.add(e.studentName());
-            else
-                rows.add(new Row(e.studentName(), rate));
-        }
-        return new MatchResult(rows, unknown);
-    }
-
-    private void addCompensations(List<Row> rows, List<RateEntry> compList) {
-        try {
-            java.util.Set<String> existing = rows.stream().map(Row::student).collect(Collectors.toSet());
-            for (var re : compList) {
-                if (!existing.contains(re.studentName())) {
-                    rows.add(new Row(re.studentName(), re.money()));
-                    existing.add(re.studentName());
-                }
-            }
-        } catch (Exception ignore) {
-        }
-    }
-
-    private Map<String, BigDecimal> computeTotalsByCurrency(List<Row> rows) {
-        return rows.stream().collect(Collectors.groupingBy(
-                r -> r.money().currency(),
-                Collectors.mapping(r -> r.money().amount(), Collectors.reducing(BigDecimal.ZERO, BigDecimal::add))));
-    }
-
-    private Set<String> collectCurrencies(Map<String, BigDecimal> totals) {
-        Set<String> currencies = new LinkedHashSet<>();
-        currencies.addAll(totals.keySet().stream().map(String::toUpperCase).toList());
-        return currencies;
     }
 
     private BigDecimal computeKrwTotal(Map<String, BigDecimal> totals,
@@ -157,13 +86,10 @@ public class DailySummaryJob {
                 continue;
             }
             var snap = rateSnapshots.get(cur);
-            if (snap == null) {
-                // 환율 실패 시 스킵하고 이후 본문에서 실패 정보 노출
-                continue;
-            }
+            if (snap == null) continue;
             acc = acc.add(amt.multiply(snap.krwPer()));
         }
-        return acc.setScale(0, java.math.RoundingMode.HALF_UP);
+        return acc.setScale(0, RoundingMode.HALF_UP);
     }
 
     private String buildEmailBody(
@@ -190,8 +116,7 @@ public class DailySummaryJob {
         sb.append("\n[적용 환율]\n");
         List<String> rateLines = new ArrayList<>();
         for (String cur : currencies) {
-            if ("KRW".equalsIgnoreCase(cur))
-                continue;
+            if ("KRW".equalsIgnoreCase(cur)) continue;
             if (rateErrors.containsKey(cur)) {
                 rateLines.add(String.format("- %s: 조회 실패 (%s)", cur, rateErrors.get(cur)));
                 continue;

@@ -19,9 +19,11 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import com.ramsbaby.preply.port.ExchangeRatePort;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 @Service
+@Slf4j
 public class FxRateService implements ExchangeRatePort {
 
     private static final Duration TTL = Duration.ofMinutes(30);
@@ -80,7 +82,7 @@ public class FxRateService implements ExchangeRatePort {
             RateResp dto = om.readValue(res.body(), RateResp.class);
             return dto.rates() == null ? null : dto.rates().get("KRW");
         } catch (Exception e) {
-            System.out.println("[FX] exchangerate.host error: " + e.getMessage());
+            log.warn("[FX] exchangerate.host error: {}", e.getMessage());
             return null;
         }
     }
@@ -104,7 +106,7 @@ public class FxRateService implements ExchangeRatePort {
             if (!"success".equalsIgnoreCase(dto.result())) return null;
             return dto.rates() == null ? null : dto.rates().get("KRW");
         } catch (Exception e) {
-            System.out.println("[FX] open.er-api.com error: " + e.getMessage());
+            log.warn("[FX] open.er-api.com error: {}", e.getMessage());
             return null;
         }
     }
@@ -112,7 +114,7 @@ public class FxRateService implements ExchangeRatePort {
     private void debugHttp(String provider, HttpResponse<String> res) {
         String body = res.body();
         if (body != null && body.length() > 300) body = body.substring(0, 300) + "...";
-        System.out.println("[FX] " + provider + " HTTP " + res.statusCode() + " body=" + body);
+        log.warn("[FX] {} HTTP {} body={}", provider, res.statusCode(), body);
     }
 
     public Snapshot snapshot(String currency) {
