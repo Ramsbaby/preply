@@ -5,6 +5,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,10 +26,12 @@ import com.ramsbaby.preply.port.MailCachePort;
 import com.ramsbaby.preply.port.RateLoaderPort;
 
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 @RestController
 @RequestMapping("/api")
 @RequiredArgsConstructor
+@Slf4j
 public class ApiController {
 
     private final AppProps props;
@@ -39,7 +42,17 @@ public class ApiController {
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm");
 
     @GetMapping("/today")
-    public ResponseEntity<TodaySummaryResponse> todaySummary() {
+    public ResponseEntity<?> todaySummary() {
+        try {
+            return ResponseEntity.ok(buildSummary());
+        } catch (Exception e) {
+            log.error("API /today 실패", e);
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Internal error"));
+        }
+    }
+
+    private TodaySummaryResponse buildSummary() {
         ZoneId tz = ZoneId.of(props.gcal().timeZone());
         LocalDate today = LocalDate.now(tz);
 
@@ -60,6 +73,7 @@ public class ApiController {
         List<String> unmatched = new ArrayList<>();
 
         for (LessonEvent e : events) {
+            if (e.studentName() == null) continue;
             Money rate = rateByStudent.get(e.studentName());
             String time = e.startAt() != null ? e.startAt().format(TIME_FMT) : null;
             if (rate != null) {
@@ -70,19 +84,23 @@ public class ApiController {
             }
         }
 
-        List<TodaySummaryResponse.LessonDetail> cancelled = compensations.stream()
-                .map(re -> new TodaySummaryResponse.LessonDetail(
-                        re.studentName(), re.money().amount(), re.money().currency(), null))
-                .toList();
+        List<TodaySummaryResponse.LessonDetail> cancelled = new ArrayList<>();
+        for (RateEntry re : compensations) {
+            if (re == null || re.money() == null || re.studentName() == null) continue;
+            cancelled.add(new TodaySummaryResponse.LessonDetail(
+                    re.studentName(), re.money().amount(), re.money().currency(), null));
+        }
 
         // Compute totals: scheduled + compensations (avoid double-counting)
+        // Match DailySummaryJob logic: existing.add() to prevent same-student duplication
         List<TodaySummaryResponse.LessonDetail> all = new ArrayList<>(scheduled);
-        Set<String> scheduledNames = scheduled.stream()
+        Set<String> existing = new HashSet<>(scheduled.stream()
                 .map(TodaySummaryResponse.LessonDetail::student)
-                .collect(Collectors.toSet());
+                .collect(Collectors.toSet()));
         for (var c : cancelled) {
-            if (!scheduledNames.contains(c.student())) {
+            if (!existing.contains(c.student())) {
                 all.add(c);
+                existing.add(c.student());
             }
         }
 
@@ -92,8 +110,8 @@ public class ApiController {
                         Collectors.mapping(TodaySummaryResponse.LessonDetail::amount,
                                 Collectors.reducing(BigDecimal.ZERO, BigDecimal::add))));
 
-        return ResponseEntity.ok(new TodaySummaryResponse(
+        return new TodaySummaryResponse(
                 today, scheduled, cancelled, unmatched, totals,
-                scheduled.size(), cancelled.size()));
+                scheduled.size(), cancelled.size());
     }
 }

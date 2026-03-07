@@ -1,0 +1,12 @@
+# Cloud Build ignore (overrides .gitignore)
+.git
+.idea
+.vscode
+.cursor
+build/
+out/
+*.iml
+*.log
+.DS_Store
+.env
+.env.*

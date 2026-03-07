@@ -1,7 +1,8 @@
 # 빌드 스테이지
 FROM eclipse-temurin:21-jdk-jammy AS build
 WORKDIR /app
-COPY gradlew gradle/ build.gradle settings.gradle ./
+COPY gradlew build.gradle settings.gradle ./
+COPY gradle gradle
 COPY src ./src
 RUN ./gradlew clean bootJar -x test
 
