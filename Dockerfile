@@ -4,7 +4,7 @@ WORKDIR /app
 COPY gradlew build.gradle settings.gradle ./
 COPY gradle gradle
 COPY src ./src
-RUN ./gradlew clean bootJar -x test
+RUN chmod +x ./gradlew && ./gradlew clean bootJar -x test
 
 # 런타임 스테이지(슬림 JRE)
 FROM eclipse-temurin:21-jre-jammy
