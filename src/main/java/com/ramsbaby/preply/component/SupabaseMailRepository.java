@@ -93,9 +93,13 @@ public class SupabaseMailRepository implements MailCachePort {
     }
 
     public List<RateEntry> findTodayCompensations(ZoneId tz) {
+        return findCompensations(LocalDate.now(tz), tz);
+    }
+
+    @Override
+    public List<RateEntry> findCompensations(LocalDate date, ZoneId tz) {
         if (!enabled())
             return List.of();
-        LocalDate today = LocalDate.now(tz);
         try {
             String sql = """
                     select student_normalized, amount, currency, lesson_date
@@ -105,7 +109,7 @@ public class SupabaseMailRepository implements MailCachePort {
                     order by received_at desc
                     limit 200
                     """.formatted(props.supabase().table());
-            List<RateEntry> rows = jdbc.query(sql, Map.of("lesson_date", today), (rs, i) -> {
+            List<RateEntry> rows = jdbc.query(sql, Map.of("lesson_date", date), (rs, i) -> {
                 String student = rs.getString("student_normalized");
                 BigDecimal amt = rs.getBigDecimal("amount");
                 String cur = rs.getString("currency");

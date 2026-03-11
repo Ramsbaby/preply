@@ -1,5 +1,6 @@
 package com.ramsbaby.preply.port;
 
+import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
@@ -16,4 +17,5 @@ public interface MailCachePort {
     Map<String, Money> findLatestBookingRates();
 
     List<RateEntry> findTodayCompensations(ZoneId tz);
+    List<RateEntry> findCompensations(LocalDate date, ZoneId tz);
 }

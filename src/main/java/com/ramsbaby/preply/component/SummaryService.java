@@ -48,20 +48,25 @@ public class SummaryService {
 
     public TodaySummary buildTodaySummary() {
         ZoneId tz = ZoneId.of(props.gcal().timeZone());
-        LocalDate today = LocalDate.now(tz);
+        return buildSummary(LocalDate.now(tz));
+    }
+
+    public TodaySummary buildSummary(LocalDate date) {
+        ZoneId tz = ZoneId.of(props.gcal().timeZone());
+        LocalDate today = date;
 
         Map<String, Money> rateByStudent;
         List<RateEntry> compensations;
 
         if (supabase.enabled()) {
             rateByStudent = supabase.findLatestBookingRates();
-            compensations = supabase.findTodayCompensations(tz);
+            compensations = supabase.findCompensations(today, tz);
         } else {
             rateByStudent = rateLoader.loadRates();
             compensations = rateLoader.loadTodayCancellationCompensations();
         }
 
-        List<LessonEvent> events = gcal.loadTodayPreplyEvents();
+        List<LessonEvent> events = gcal.loadPreplyEvents(today);
 
         List<TodaySummaryResponse.LessonDetail> scheduled = new ArrayList<>();
         List<String> unmatched = new ArrayList<>();
@@ -103,7 +108,7 @@ public class SummaryService {
                         Collectors.mapping(TodaySummaryResponse.LessonDetail::amount,
                                 Collectors.reducing(BigDecimal.ZERO, BigDecimal::add))));
 
-        return new TodaySummary(today, scheduled, cancelled, unmatched, totals);
+        return new TodaySummary(date, scheduled, cancelled, unmatched, totals);
     }
 
     public TodaySummaryResponse toApiResponse(TodaySummary summary) {

@@ -44,10 +44,15 @@ public class GcalReader implements LessonEventsPort {
     }
 
     public List<LessonEvent> loadTodayPreplyEvents() {
+        return loadPreplyEvents(LocalDate.now(ZoneId.of(props.gcal().timeZone())));
+    }
+
+    @Override
+    public List<LessonEvent> loadPreplyEvents(LocalDate date) {
         try {
             Calendar client = newCalendarClient();
             var tz = ZoneId.of(props.gcal().timeZone());
-            DateWindow win = todayWindow(tz);
+            DateWindow win = windowFor(date, tz);
 
             Events resp = client.events().list(props.gcal().calendarId())
                     .setTimeMin(new com.google.api.client.util.DateTime(java.util.Date.from(win.start())))
@@ -86,9 +91,9 @@ public class GcalReader implements LessonEventsPort {
                 .build();
     }
 
-    private DateWindow todayWindow(ZoneId tz) {
-        var start = LocalDate.now(tz).atStartOfDay(tz).toInstant();
-        var end = LocalDate.now(tz).plusDays(1).atStartOfDay(tz).toInstant();
+    private DateWindow windowFor(LocalDate date, ZoneId tz) {
+        var start = date.atStartOfDay(tz).toInstant();
+        var end = date.plusDays(1).atStartOfDay(tz).toInstant();
         return new DateWindow(start, end);
     }
 
