@@ -1,0 +1,39 @@
+name: Preply Daily Ingest
+
+on:
+  schedule:
+    # 매일 09:00 KST (00:00 UTC)
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get GCP Identity Token
+        id: auth
+        run: |
+          echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa.json
+          curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts > /dev/null 2>&1
+          source ~/google-cloud-sdk/path.bash.inc
+          gcloud auth activate-service-account --key-file=/tmp/sa.json
+          TOKEN=$(gcloud auth print-identity-token --audiences="${{ secrets.CLOUD_RUN_URL }}")
+          echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          rm /tmp/sa.json
+
+      - name: Call daily ingest API
+        run: |
+          RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            "${{ secrets.CLOUD_RUN_URL }}/run/ingest/daily")
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          echo "=== Response ==="
+          echo "HTTP Code: $HTTP_CODE"
+          echo "Body: $BODY"
+          if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+            echo "✅ Success!"
+          else
+            echo "❌ Failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
