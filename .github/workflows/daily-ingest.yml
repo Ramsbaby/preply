@@ -1,9 +1,6 @@
 name: Preply Daily Ingest
 
 on:
-  schedule:
-    # 매일 09:00 KST (00:00 UTC)
-    - cron: '0 0 * * *'
   workflow_dispatch:
 
 jobs:
