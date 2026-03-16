@@ -1,9 +1,6 @@
 name: Preply Weekly Ingest
 
 on:
-  schedule:
-    # 매주 월요일 15:00 KST (06:00 UTC)
-    - cron: '0 6 * * 1'
   workflow_dispatch:
 
 jobs:
