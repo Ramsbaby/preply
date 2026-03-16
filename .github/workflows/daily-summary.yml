@@ -2,8 +2,8 @@ name: Preply Daily Summary
 
 on:
   schedule:
-    # 매일 23:05 KST (14:05 UTC)
-    - cron: '5 14 * * *'
+    # 매일 22:00 KST (13:00 UTC)
+    - cron: '0 13 * * *'
   workflow_dispatch:
 
 jobs:
