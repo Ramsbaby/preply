@@ -321,13 +321,27 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
         }
     }
 
-    private LocalDate extractLessonDate(String cleaned, LocalDate today) {
-        Matcher md = P_LESSON_DATE.matcher(cleaned);
-        if (!md.find())
-            return null;
-        int mm = Integer.parseInt(md.group(1));
-        int dd = Integer.parseInt(md.group(2));
-        return LocalDate.of(today.getYear(), mm, dd);
+    // package-private static: 순수 함수(인스턴스 상태 미사용)라 단위 테스트에서 직접 검증 가능.
+    static LocalDate extractLessonDate(String cleaned, LocalDate today) {
+        // 취소 보상 메일의 레슨 날짜 표기는 여러 형식일 수 있으므로 예약 메일과 동일하게 모두 시도한다.
+        // (기존: "레슨: M월 D일" 한 형식만 인식 → "일정: M월 D일"·"레슨 시작: M월 D일"·영문 "Lesson time: MMM DD"
+        //  형식으로 온 취소 메일은 날짜 파싱 실패로 조용히 버려져 12시간 이내 취소 수입이 누락됨)
+        for (Pattern p : new Pattern[] { P_LESSON_DATE, P_LESSON_DATE_ALT, P_LESSON_START_KO }) {
+            Matcher m = p.matcher(cleaned);
+            if (m.find()) {
+                int mm = Integer.parseInt(m.group(1));
+                int dd = Integer.parseInt(m.group(2));
+                return LocalDate.of(today.getYear(), mm, dd);
+            }
+        }
+        Matcher mEn = P_LESSON_START_EN.matcher(cleaned);
+        if (mEn.find()) {
+            int mm = parseEnglishMonth(mEn.group(1));
+            int dd = Integer.parseInt(mEn.group(2));
+            if (mm > 0)
+                return LocalDate.of(today.getYear(), mm, dd);
+        }
+        return null;
     }
 
     /**
