@@ -124,7 +124,7 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
     // 신규 구독 메일: 제목/본문에서 학생명 추출 (예: "Anna Y. 학생이 구독했어요!").
     // "학생이"가 표준 표기(주인님 확인)이며, 혹시 모를 "님이" 변형도 유연하게 허용.
     private static final Pattern P_SUBSCRIPTION_STUDENT = Pattern.compile("(.+?)\\s*(?:학생이|님이)\\s*구독");
-    // 신규 구독 학생 기본 단가: $40 순수익 표시값. 예약 메일과 달리 ×0.82(수수료 제외) 적용하지 않는다.
+    // 신규 구독 학생 기본 정가: $40. 사용 시 예약 메일과 동일하게 ×0.82(Preply 수수료 제외) 적용 → 순수익 $32.8.
     private static final BigDecimal SUBSCRIPTION_DEFAULT_USD = new BigDecimal("40.00");
     // 구독 메일 in-memory 종류 마커. DB 저장 시에는 SupabaseMailRepository가 'booking'으로 변환한다
     // (프로덕션 테이블 kind CHECK 제약이 'booking'|'cancellation_compensation'만 허용 + findLatestBookingRates가 kind='booking'만 조회).
@@ -530,8 +530,8 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
                     .map(d -> d.toInstant().atZone(KST))
                     .orElse(ZonedDateTime.now(KST));
 
-            // 3) 단가: $40 순수익 그대로 (×0.82 미적용)
-            Money money = new Money(SUBSCRIPTION_DEFAULT_USD, "USD");
+            // 3) 단가: $40 정가 × 0.82(Preply 수수료 제외) = 순수익 $32.8. 예약 메일과 동일 처리.
+            Money money = new Money(SUBSCRIPTION_DEFAULT_USD.multiply(new BigDecimal("0.82")), "USD");
 
             // 4) 레슨 날짜 없음 → 수신 날짜로 대체(DB NOT NULL·PK 충족용)
             LocalDate lessonDate = receivedAt.toLocalDate();
