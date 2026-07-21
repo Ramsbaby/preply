@@ -155,7 +155,11 @@ public class SupabaseMailRepository implements MailCachePort {
         p.addValue("received_at", java.sql.Timestamp.from(m.receivedAt().toInstant()));
         p.addValue("subject", m.subject());
         p.addValue("snippet", m.snippet());
-        p.addValue("kind", m.kind());
+        // 구독 메일은 DB에서 'booking'으로 저장한다:
+        // (1) 프로덕션 테이블 kind CHECK 제약이 'booking'|'cancellation_compensation'만 허용,
+        // (2) findLatestBookingRates가 kind='booking'만 조회하므로 구독 $40 단가가 요약에 반영되려면 booking이어야 함.
+        // 구독 메일은 가입 시점(가장 이른 received_at)에 도착하므로, 이후 정식 예약이 received_at 최신순 정렬에서 자연히 우선한다.
+        p.addValue("kind", "subscription".equals(m.kind()) ? "booking" : m.kind());
         p.addValue("lesson_date", m.lessonDate());
         return p;
     }

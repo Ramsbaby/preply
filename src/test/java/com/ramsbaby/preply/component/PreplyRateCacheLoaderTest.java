@@ -57,6 +57,35 @@ class PreplyRateCacheLoaderTest {
         assertThat(PreplyRateCacheLoader.extractLessonDate("날짜 정보 없음", TODAY))
                 .isNull();
     }
+
+    // --- 신규 구독 메일 학생명 파싱 ---
+
+    @Test
+    void extractSubscriptionStudent_fromSubject() {
+        // 표준 제목 형식 (주인님 확인): "◯◯ 학생이 구독했어요!"
+        assertThat(PreplyRateCacheLoader.extractSubscriptionStudent("Anna Y. 학생이 구독했어요!"))
+                .isEqualTo("Anna Y.");
+    }
+
+    @Test
+    void extractSubscriptionStudent_normalizesToCalendarKey() {
+        // 구독 메일에서 뽑은 이름이 캘린더 매칭 키("anna")로 정규화되어야 함
+        String raw = PreplyRateCacheLoader.extractSubscriptionStudent("Anna Y. 학생이 구독했어요!");
+        assertThat(PreplyRateCacheLoader.normalize(raw)).isEqualTo("anna");
+    }
+
+    @Test
+    void extractSubscriptionStudent_acceptsNimiVariant() {
+        // 혹시 모를 "님이" 변형도 유연하게 인식
+        assertThat(PreplyRateCacheLoader.extractSubscriptionStudent("Michelle 님이 구독했어요"))
+                .isEqualTo("Michelle");
+    }
+
+    @Test
+    void extractSubscriptionStudent_returnsNullWhenNoMatch() {
+        assertThat(PreplyRateCacheLoader.extractSubscriptionStudent("Camila S.님이 레슨을 예약했어요"))
+                .isNull();
+    }
 }
 
 

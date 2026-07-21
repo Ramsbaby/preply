@@ -121,12 +121,28 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
     private static final Pattern P_AMOUNT_CURRENCY = Pattern.compile(
             "([0-9][0-9,]*\\.?[0-9]{0,2})\\s*(USD|KRW|\\$|₩)", Pattern.CASE_INSENSITIVE);
 
+    // 신규 구독 메일: 제목/본문에서 학생명 추출 (예: "Anna Y. 학생이 구독했어요!").
+    // "학생이"가 표준 표기(주인님 확인)이며, 혹시 모를 "님이" 변형도 유연하게 허용.
+    private static final Pattern P_SUBSCRIPTION_STUDENT = Pattern.compile("(.+?)\\s*(?:학생이|님이)\\s*구독");
+    // 신규 구독 학생 기본 단가: $40 순수익 표시값. 예약 메일과 달리 ×0.82(수수료 제외) 적용하지 않는다.
+    private static final BigDecimal SUBSCRIPTION_DEFAULT_USD = new BigDecimal("40.00");
+    // 구독 메일 in-memory 종류 마커. DB 저장 시에는 SupabaseMailRepository가 'booking'으로 변환한다
+    // (프로덕션 테이블 kind CHECK 제약이 'booking'|'cancellation_compensation'만 허용 + findLatestBookingRates가 kind='booking'만 조회).
+    static final String KIND_SUBSCRIPTION = "subscription";
+
     private static final java.util.function.Predicate<String> IS_COMPENSATION_TEXT = t -> t
             .contains("예정된 시작 시간 12시간 전에 취소") && t.contains("지불해 드립니다");
 
     public Map<String, Money> loadRates() {
         Map<String, Money> rateByStudent = new HashMap<>();
-        fetchBookings(props.gcal().lookBackDays()).mails()
+        List<ParsedMail> mails = fetchBookings(props.gcal().lookBackDays()).mails();
+        // 병합 규칙: 정식 예약 메일의 실제 단가가 항상 우선. 구독 $40은 그 학생의 예약 단가가
+        // 없을 때만 fallback. 순서에 의존하지 않도록 (1) 구독을 먼저 깔고 (2) 예약으로 덮어쓴다.
+        mails.stream()
+                .filter(pm -> KIND_SUBSCRIPTION.equals(pm.kind()))
+                .forEach(pm -> rateByStudent.put(pm.studentNormalized(), pm.money()));
+        mails.stream()
+                .filter(pm -> !KIND_SUBSCRIPTION.equals(pm.kind()))
                 .forEach(pm -> rateByStudent.put(pm.studentNormalized(), pm.money()));
         return rateByStudent;
     }
@@ -198,9 +214,12 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
             Date dateEnd = Date.from(end.atStartOfDay(KST).toInstant());
 
             // Subject Term + Date Range Term
-            SearchTerm subjectTerm = new OrTerm(
+            // "구독" 추가: 신규 학생의 "◯◯ 학생이 구독했어요!" 메일도 함께 검색한다.
+            SearchTerm subjectTerm = new OrTerm(new SearchTerm[] {
                     new SubjectTerm("예약했어요"),
-                    new SubjectTerm("scheduled a new lesson"));
+                    new SubjectTerm("scheduled a new lesson"),
+                    new SubjectTerm("구독")
+            });
             SearchTerm dateTerm = new AndTerm(
                     new ReceivedDateTerm(ComparisonTerm.GE, dateStart),
                     new ReceivedDateTerm(ComparisonTerm.LT, dateEnd));
@@ -216,8 +235,8 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
 
             List<ParsedMail> results = Arrays.stream(found)
                     // isInRange는 이미 SearchQuery로 필터링했으므로 제거 가능하지만, 더 안전하게 유지해도 됨
-                    // 여기서는 SearchTerm을 믿고 바로 매핑
-                    .map(this::parseBooking)
+                    // 여기서는 SearchTerm을 믿고 바로 매핑. 제목에 "구독"이 있으면 구독 파서로 분기.
+                    .map(this::parseBookingOrSubscription)
                     .flatMap(Optional::stream)
                     .toList();
             inbox.close(false);
@@ -456,6 +475,99 @@ public class PreplyRateCacheLoader implements RateLoaderPort {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /**
+     * 제목에 "구독"이 있으면 신규 구독 메일 파서로, 그 외에는 기존 예약 파서로 분기한다.
+     */
+    private Optional<ParsedMail> parseBookingOrSubscription(Message msg) {
+        try {
+            String subject = Optional.ofNullable(msg.getSubject()).orElse("");
+            if (subject.contains("구독")) {
+                return parseSubscription(msg);
+            }
+        } catch (Exception e) {
+            // 제목 읽기 실패 시 예약 파서로 폴백
+            log.warn("제목 읽기 실패, 예약 파서로 폴백: {}", e.toString());
+        }
+        return parseBooking(msg);
+    }
+
+    /**
+     * 신규 학생 구독 메일("◯◯ 학생이 구독했어요!")을 파싱한다.
+     * - 학생명: 제목 우선, 없으면 본문에서 추출
+     * - 단가: $40 USD 순수익 표시값(예약 메일과 달리 ×0.82 미적용)
+     * - 레슨 날짜: 구독 메일엔 없음 → DB(lesson_date NOT NULL·PK) 저장을 위해 수신 날짜를 사용.
+     * 단가 맵(loadRates/findLatestBookingRates)은 학생 단위라 날짜와 무관하므로 매칭에 영향 없음.
+     */
+    private Optional<ParsedMail> parseSubscription(Message msg) {
+        try {
+            String subject = Optional.ofNullable(msg.getSubject()).orElse("");
+
+            // 1) 학생명: 제목 우선, 없으면 본문 폴백
+            String student = extractSubscriptionStudent(subject);
+            if (student == null || student.isBlank()) {
+                String html = extractHtml(msg).orElseGet(() -> {
+                    try {
+                        return extractText(msg).orElse("");
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+                if (!html.isBlank()) {
+                    String cleaned = cleanText(org.jsoup.Jsoup.parse(html).text());
+                    student = extractSubscriptionStudent(cleaned);
+                }
+            }
+            if (student == null || student.isBlank()) {
+                log.warn("구독 메일 학생명 파싱 실패 (subject: {})", subject);
+                return Optional.empty();
+            }
+            student = student.trim();
+
+            // 2) 수신 시각(KST)
+            ZonedDateTime receivedAt = Optional.ofNullable(msg.getReceivedDate())
+                    .map(d -> d.toInstant().atZone(KST))
+                    .orElse(ZonedDateTime.now(KST));
+
+            // 3) 단가: $40 순수익 그대로 (×0.82 미적용)
+            Money money = new Money(SUBSCRIPTION_DEFAULT_USD, "USD");
+
+            // 4) 레슨 날짜 없음 → 수신 날짜로 대체(DB NOT NULL·PK 충족용)
+            LocalDate lessonDate = receivedAt.toLocalDate();
+
+            String msgId = messageId(msg, receivedAt, student);
+            String snippet = snippet("신규 구독 학생 기본 단가 $40 · 제목: " + subject);
+
+            return Optional.of(new ParsedMail(
+                    msgId,
+                    student,
+                    normalize(student),
+                    money,
+                    receivedAt,
+                    subject,
+                    snippet,
+                    KIND_SUBSCRIPTION,
+                    lessonDate));
+
+        } catch (FolderClosedException | StoreClosedException e) {
+            log.error("IMAP 연결 끊김 감지(구독): batch 중단");
+            throw new RuntimeException("Connection closed", e);
+        } catch (Exception e) {
+            log.warn("구독 메일 파싱 오류: {}", e.toString());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * 구독 메일 제목/본문에서 학생명을 추출한다.
+     * package-private static 순수 함수 — 단위 테스트에서 직접 검증 가능.
+     */
+    static String extractSubscriptionStudent(String text) {
+        if (text == null)
+            return null;
+        Matcher m = P_SUBSCRIPTION_STUDENT.matcher(cleanText(text));
+        return m.find() ? m.group(1).trim() : null;
     }
 
     private Optional<ParsedMail> parseBooking(Message msg) {
