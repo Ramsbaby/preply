@@ -69,3 +69,4 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+/ops/collector-local.json

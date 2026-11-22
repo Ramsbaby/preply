@@ -12,7 +12,8 @@ public record TodaySummaryResponse(
         List<String> unmatchedStudents,
         Map<String, BigDecimal> totalsByCurrency,
         int scheduledCount,
-        int cancelledCount
+        int cancelledCount,
+        List<LessonDetail> upcomingLessons, java.time.Instant capturedAt
 ) {
     public record LessonDetail(
             String student,

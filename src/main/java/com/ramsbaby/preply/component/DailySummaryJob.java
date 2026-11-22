@@ -29,6 +29,7 @@ public class DailySummaryJob {
     private final AppProps props;
     private final SummaryService summaryService;
     private final JavaMailSender mailSender;
+    private final GmailDelivery gmail;
     private final ExchangeRatePort fx;
 
     public record Row(String student, Money money) {}
@@ -69,8 +70,17 @@ public class DailySummaryJob {
 
         String body = buildEmailBody(totals, krwTotal, currencies, rows,
                 summary.unmatched(), tz, rateSnapshots, rateErrors);
-        String subject = "[Preply] 오늘 레슨 요약 (" + LocalDate.now(tz) + ")";
+        if (summary.capturedAt() != null) {
+            StringBuilder info = new StringBuilder("\n[Preply 일정 조회 ").append(summary.capturedAt().atZone(tz).toLocalTime().withNano(0))
+                    .append(" 기준]\n종료된 수업 ").append(summary.scheduled().size()).append("건, 유상 취소 ")
+                    .append(summary.cancelled().size()).append("건. 종료된 미확정 수업은 수업 단가 기준입니다.\n");
+            for (var next : summary.upcoming()) info.append("• 합계 제외 (종료 전): ").append(next.startAt())
+                    .append(" ").append(next.student()).append(" / ").append(fmtAmount(next.amount(), next.currency())).append('\n');
+            body += info;
+        }
+        String subject = "[Preply] 오늘 레슨 요약 (" + summary.date() + ")";
         String[] recipients = resolveRecipients();
+        if (summary.capturedAt() != null && !gmail.enabled()) throw new IllegalStateException("Gmail sender is not configured");
         sendEmail(subject, body, recipients);
     }
 
@@ -163,11 +173,12 @@ public class DailySummaryJob {
         var msg = mailSender.createMimeMessage();
         try {
             var helper = new MimeMessageHelper(msg, false, "UTF-8");
-            helper.setFrom(props.mail().smtp().from());
+            helper.setFrom(gmail.enabled() ? gmail.sender() : props.mail().smtp().from());
             helper.setTo(recipients);
             helper.setSubject(subject);
             helper.setText(body, false);
-            mailSender.send(msg);
+            if (gmail.enabled()) gmail.send(msg);
+            else mailSender.send(msg);
         } catch (Exception e) {
             throw new IllegalStateException("요약 메일 발송 실패", e);
         }

@@ -344,3 +344,11 @@ MIT License (자세한 내용은 [LICENSE](LICENSE) 참고)
 ## 🙏 기여
 
 버그 리포트 및 기능 제안은 [Issues](https://github.com/YOUR_REPO/issues)에서 환영합니다.
+
+### Preply 캘린더 기반 운영 모드
+
+맥 미니의 로그인 세션은 고정된 캘린더 조회 쿼리만 실행한다. 수업별 ID, 시각, 상태와 금액을 서울 날짜별 JSON으로 비공개 GCS 버킷에 올린다. 브라우저 비밀번호와 쿠키는 전송하지 않는다. `ops/collector-local.json`의 `tutor`(문자열)와 `bucket`을 설정한 뒤 macOS 사용자로 `python3 ops/install-collector.py`를 실행한다. 맥 미니의 시스템 시간대는 서울이어야 한다.
+
+Cloud Run은 `APP_LESSON_BUCKET`, `APP_LESSON_FIRST_DATE`, `APP_TUTOR_PAYOUT_SHARE`를 사용한다. 조회 시점까지 캘린더 슬롯이 끝난 수업을 서울 수업일에 포함한다. 확정·유상 취소는 수업 자체의 실제 수익을 쓰고, 미확정 일반 수업은 해당 수업 단가 × 수업 단위 × 튜터 정산 비율로 계산한다. 미래 수업은 별도 표시한다. 22시 발송은 22시 이후 새 조회본을 기다리며 실패 시 오래된 금액을 보내지 않는다. 수집 시작일 전의 과거 API 조회만 기존 계산 방식을 사용한다.
+
+Gmail 전송은 `APP_GMAIL_SENDER`와 마운트된 발송 전용 OAuth 자격증명 파일 `APP_GMAIL_CREDENTIALS`를 사용한다. 기존 수신 주소 목록은 유지한다. 이 구성에서 `APP_MAIL_INGEST_ENABLED=false`로 IMAP 수집을 중단한다.

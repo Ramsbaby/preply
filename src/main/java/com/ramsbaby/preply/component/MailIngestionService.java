@@ -25,13 +25,16 @@ public class MailIngestionService {
     private final RateLoaderPort loader;
     private final MailCachePort supabase;
 
+    @org.springframework.beans.factory.annotation.Value("${APP_MAIL_INGEST_ENABLED:true}")
+    private boolean ingestEnabled = true;
+
     public IngestResult ingestYear() {
         // 스타트업 부하 완화: 1년 → 6개월(180일)로 축소
         return ingest(180);
     }
 
     public IngestResult ingest(int lookBackDays) {
-        if (!supabase.enabled()) {
+        if (!ingestEnabled || !supabase.enabled()) {
             log.info("Supabase 미설정: ingest 스킵");
             return new IngestResult(0, 0, 0, 0, false);
         }

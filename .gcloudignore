@@ -10,3 +10,5 @@ out/
 .DS_Store
 .env
 .env.*
+.gradle/
+ops/collector-local.json

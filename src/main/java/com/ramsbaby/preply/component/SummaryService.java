@@ -32,6 +32,7 @@ import lombok.extern.slf4j.Slf4j;
 public class SummaryService {
 
     private final AppProps props;
+    private final CalendarSnapshot calendarSnapshot;
     private final RateLoaderPort rateLoader;
     private final MailCachePort supabase;
     private final LessonEventsPort gcal;
@@ -43,16 +44,19 @@ public class SummaryService {
             List<TodaySummaryResponse.LessonDetail> scheduled,
             List<TodaySummaryResponse.LessonDetail> cancelled,
             List<String> unmatched,
-            Map<String, BigDecimal> totalsByCurrency
+            Map<String, BigDecimal> totalsByCurrency,
+            List<TodaySummaryResponse.LessonDetail> upcoming, java.time.Instant capturedAt
     ) {}
 
     public TodaySummary buildTodaySummary() {
         ZoneId tz = ZoneId.of(props.gcal().timeZone());
-        return buildSummary(LocalDate.now(tz));
+        var today = LocalDate.now(tz);
+        return calendarSnapshot.enabled() ? calendarSnapshot.summary(today, tz, true) : buildSummary(today);
     }
 
     public TodaySummary buildSummary(LocalDate date) {
         ZoneId tz = ZoneId.of(props.gcal().timeZone());
+        if (calendarSnapshot.covers(date)) return calendarSnapshot.summary(date, tz, false);
         LocalDate today = date;
 
         Map<String, Money> rateByStudent;
@@ -108,7 +112,7 @@ public class SummaryService {
                         Collectors.mapping(TodaySummaryResponse.LessonDetail::amount,
                                 Collectors.reducing(BigDecimal.ZERO, BigDecimal::add))));
 
-        return new TodaySummary(date, scheduled, cancelled, unmatched, totals);
+        return new TodaySummary(date, scheduled, cancelled, unmatched, totals, List.of(), null);
     }
 
     public TodaySummaryResponse toApiResponse(TodaySummary summary) {
@@ -119,7 +123,7 @@ public class SummaryService {
                 summary.unmatched(),
                 summary.totalsByCurrency(),
                 summary.scheduled().size(),
-                summary.cancelled().size());
+                summary.cancelled().size(), summary.upcoming(), summary.capturedAt());
     }
 
     public List<DailySummaryJob.Row> toRows(TodaySummary summary) {
@@ -132,7 +136,7 @@ public class SummaryService {
                 .map(TodaySummaryResponse.LessonDetail::student)
                 .collect(Collectors.toSet()));
         for (var c : summary.cancelled()) {
-            if (!existing.contains(c.student())) {
+            if (summary.capturedAt() != null || !existing.contains(c.student())) {
                 rows.add(new DailySummaryJob.Row(c.student(),
                         new Money(c.amount(), c.currency())));
                 existing.add(c.student());
